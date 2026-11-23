@@ -97,7 +97,7 @@ python3 build.py
 
 ## Site settings (no coding needed)
 Open `public/assets/js/site.js` and scroll to the `window.CUBIX` block at the bottom:
-- `holiday`: the deadline shown in the top bar. Change `cutoff` (YYYY-MM-DD) and `filesBy` each season. After the cutoff the bar switches back automatically.
+- `holiday`: a seasonal message for the top bar. Set `message` and the `until` date (YYYY-MM-DD). After that date the normal bar returns on its own.
 - `testimonials`: add real quotes from shop owners. The "What shops say" section appears on the home page as soon as there is one entry.
 - `prints`: add photos of finished prints (put the images in `public/assets/img/prints/`). The "Printed by our clients" section appears as soon as there is one entry.
 - `analyticsToken`: paste your free Cloudflare Web Analytics token to start counting visitors.

@@ -625,7 +625,7 @@ body{font-family:var(--sans);letter-spacing:-.003em}
 
 /* no grid paper, no dashed lines anywhere */
 .hero::before,.phero::before,.calc-out::before,.cta-band::before,.explain::before{display:none}
-.drop,.flist li,.empty,.spec-list li,.gcard .seal::after{border-style:solid}
+.drop,.flist li,.empty,.gcard .seal::after{border-style:solid}
 .gcard .seal::after{display:none}
 
 /* how an order works: real material, not icon cards */
@@ -720,3 +720,14 @@ body{font-family:var(--sans);letter-spacing:-.003em}
 
 /* client login link */
 @media (max-width:1180px){.hdr-login{display:none}}
+
+/* logo */
+.brand img{height:40px;width:auto;display:block}
+.ftr .brand img{height:42px}
+@media (max-width:640px){.brand img{height:34px}}
+
+/* project facts list */
+.spec-list{background:#fff;border:1px solid var(--line);border-radius:16px;padding:2px 20px;box-shadow:var(--shadow-1)}
+.spec-list li{border:0;border-bottom:1px solid var(--line);padding:14px 0;align-items:baseline}
+.spec-list li:last-child{border-bottom:0}
+.spec-list b{font-size:.95rem}

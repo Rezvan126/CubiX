@@ -10,7 +10,7 @@
   CX.onUnauthorized = () => { if (S.me) { S.me = null; toast('Your session ended. Please sign in again.', true); renderLogin(); } };
 
   // ---------------------------------------------------------------- auth screens
-  const SIDE = `${CX.brand('Team')}
+  const SIDE = `${CX.brand('Team', '../index.html', true)}
     <div><h2>Every order, every modeler, one screen.</h2>
     <ul><li>${icon('gauge')} Live capacity against the 48 hour promise</li><li>${icon('board')} Drag orders through production</li><li>${icon('chat')} Talk to shops and leave internal notes</li><li>${icon('dollar')} Track approvals and payments</li></ul></div>
     <p class="foot">CubiX production dashboard. For team members only.</p>`;

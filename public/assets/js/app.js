@@ -10,7 +10,7 @@
   CX.onUnauthorized = () => { if (S.me) { S.me = null; toast('Your session ended. Please sign in again.', true); renderLogin(); } };
 
   // ---------------------------------------------------------------- auth
-  const SIDE = `${CX.brand('Client portal')}
+  const SIDE = `${CX.brand('Client portal', '../index.html', true)}
     <div><h2>You sell the prints. We build the models.</h2>
     <ul><li>${icon('gift')} Your first model is free, any complexity</li><li>${icon('clock')} Delivered in 24 to 48 hours, weekends included</li><li>${icon('eye')} Approve a preview before you pay</li><li>${icon('printer')} Print ready STL and 3MF files</li></ul></div>
     <p class="foot">Questions? Email <a href="mailto:rizwan@coraxys.com" style="color:#fff">rizwan@coraxys.com</a></p>`;

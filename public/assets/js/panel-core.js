@@ -1,8 +1,8 @@
 /* CubiX portal core, shared by /team and /app. */
 (function () {
   const CX = window.CX = {};
-  const BRAND = '<svg viewBox="0 0 36 36" aria-hidden="true"><rect width="36" height="36" rx="10" fill="#101720"/><path d="M9.5 17.5 18 10.5l8.5 7V25h-17z" fill="none" stroke="#fff" stroke-width="2" stroke-linejoin="round"/><path d="M15.5 25v-4.2h5V25" fill="none" stroke="#fff" stroke-width="2"/><path d="M9.5 29.5h17M9.5 28v3M26.5 28v3" stroke="#ff5b1f" stroke-width="1.6"/></svg>';
-  CX.brand = (label, href = '../index.html') => `<a class="brand" href="${href}">${BRAND}CubiX${label ? `<small>${label}</small>` : ''}</a>`;
+  const BRAND = '<img src="/assets/brand/logo.svg" alt="CubiX" width="105" height="38">', BRAND_DARK = '<img src="/assets/brand/logo-on-dark.svg" alt="CubiX" width="105" height="38">';
+  CX.brand = (label, href = '../index.html', dark) => `<a class="brand" href="${href}">${dark ? BRAND_DARK : BRAND}${label ? `<small>${label}</small>` : ''}</a>`;
   CX.icon = (id, cls = '') => `<svg class="icon ${cls}"><use href="#i-${id}"/></svg>`;
   CX.esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   CX.$ = (s, r = document) => r.querySelector(s);

@@ -419,3 +419,8 @@ a.kpi:hover{border-color:var(--ink);transform:translateY(-1px)}
 @media (max-width:640px){.ctrls{grid-template-columns:1fr}}
 @media (max-width:640px){.card-head>span.small{display:none}}
 .toast{cursor:pointer}
+
+/* logo */
+.brand img{height:36px;width:auto;display:block}
+.mobilebar .brand img{height:30px}
+.side .brand img{height:34px}

@@ -360,8 +360,8 @@ document.addEventListener('click', e => {
 
 /* ============ Site settings: edit these values ============ */
 window.CUBIX = {
-  // Holiday banner. The top bar shows this until the cutoff, then switches back automatically.
-  holiday: { name: 'Christmas', cutoff: '2026-12-15', filesBy: '17 December' },
+  // Seasonal top bar. Shows `message` until the `until` date, then the normal bar returns on its own.
+  holiday: { message: 'Christmas orders welcome. We work every day, holidays included, and deliver print ready files within 24 to 48 hours.', until: '2026-12-31' },
   // Real customer quotes. The section appears on the home page as soon as this list has entries.
   // Example: { quote: 'They saved my December.', name: 'Jane Doe', shop: 'Oak and Ember', url: 'https://etsy.com/shop/...' }
   testimonials: [],
@@ -375,13 +375,9 @@ window.CUBIX = {
   const C = window.CUBIX, $ = s => document.querySelector(s);
   /* holiday deadline in the top bar */
   const bar = $('.topbar .wrap span:not(.pulse)');
-  if (bar && C.holiday && C.holiday.cutoff) {
-    const end = new Date(C.holiday.cutoff + 'T23:59:59'), days = Math.ceil((end - new Date()) / 864e5);
-    if (days >= 0) {
-      const d = end.toLocaleDateString('en-GB', { day: 'numeric', month: 'long' });
-      bar.textContent = `${C.holiday.name} orders: send by ${d} and get print files by ${C.holiday.filesBy}. ${days === 0 ? 'Last day today.' : days + (days === 1 ? ' day left.' : ' days left.')}`;
-      document.documentElement.classList.add('holiday-on');
-    }
+  if (bar && C.holiday && C.holiday.message && C.holiday.until && new Date() <= new Date(C.holiday.until + 'T23:59:59')) {
+    bar.textContent = C.holiday.message;
+    document.documentElement.classList.add('holiday-on');
   }
   const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   /* testimonials */
