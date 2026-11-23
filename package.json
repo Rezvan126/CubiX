@@ -1,0 +1,16 @@
+{
+  "name": "scalehaus",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler pages dev",
+    "db:local": "wrangler d1 execute cubix-db --local --file=schema.sql",
+    "db:remote": "wrangler d1 execute cubix-db --remote --file=schema.sql",
+    "deploy": "wrangler pages deploy",
+    "db:reset": "rm -rf .wrangler/state && wrangler d1 execute cubix-db --local --file=schema.sql",
+    "test:api": "node tests/api.test.mjs",
+    "test:e2e": "node tests/e2e.test.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "4.42.0"
+  }
+}

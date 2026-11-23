@@ -1,0 +1,14 @@
+name = "cubix3d"
+pages_build_output_dir = "public"
+compatibility_date = "2025-10-01"
+
+# Orders database (Cloudflare D1)
+[[d1_databases]]
+binding = "DB"
+database_name = "cubix-db"
+database_id = "527dc7ab-4c47-4205-9ae9-f226d9168c5a"
+
+# Uploaded photos and model files (Cloudflare R2). Switched on once R2 is enabled in the dashboard.
+# [[r2_buckets]]
+# binding = "FILES"
+# bucket_name = "cubix-files"

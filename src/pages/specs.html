@@ -1,0 +1,96 @@
+<!--meta {"title": "Technical specs | CubiX", "desc": "Watertight, manifold models prepared for FDM, resin, SLS and multicolour printing. STL, 3MF, OBJ, STEP and more. Rotate a delivered model in 3D.", "nav": "specs", "viewer": true}-->
+
+<section class="phero">
+  <div class="wrap">
+    <div class="crumbs"><a href="index.html">Home</a><span>/</span><span>Specs</span></div>
+    <h1>Built for the printer, not just the screen</h1>
+    <p class="lead">Every file is prepared for the machine and material it is going to. Rotate a delivered model below.</p>
+  </div>
+</section>
+
+<section class="sec tight">
+  <div class="wrap">
+    <div class="viewer" id="viewer">
+      <canvas id="stage" aria-label="Interactive 3D model. Drag to rotate, scroll to zoom."></canvas>
+      <div class="v-ui">
+        <div class="v-row">
+          <span class="v-pill"><span class="dot"></span>Delivered file, live in 3D</span>
+          <div class="v-checks"><span>Watertight</span><span>Manifold</span><span id="vSize">Scaled</span></div>
+        </div>
+        <div style="display:grid;gap:12px">
+          <div class="v-row" style="align-items:flex-end"><div><h2 id="vTitle" style="font-size:1.3rem">Brick Georgian colonial</h2><p id="vSub" class="muted">STL, from customer photos</p></div><span class="muted">Drag to rotate, scroll to zoom</span></div>
+          <div class="v-tabs" role="tablist" aria-label="Choose a model">
+            <button role="tab" aria-selected="true" data-m="0">Colonial</button>
+            <button role="tab" aria-selected="false" data-m="1">LED lantern</button>
+            <button role="tab" aria-selected="false" data-m="2">Church</button>
+            <button role="tab" aria-selected="false" data-m="3">Keepsake</button>
+            <button role="tab" aria-selected="false" data-m="4">Plantation</button>
+          </div>
+        </div>
+      </div>
+      <div class="v-load" id="vLoad"><i></i></div>
+    </div>
+  </div>
+</section>
+
+<section class="sec" style="padding-top:0">
+  <div class="wrap bento">
+    <article class="panel b-3 rv">
+      <span class="eyebrow accent">Output files</span>
+      <h2 style="font-size:1.3rem">Any format your workflow needs</h2>
+      <div class="tags"><span>STL</span><span>3MF</span><span>OBJ</span><span>PLY</span><span>STEP</span><span>FBX</span><span>GLB</span><span>BLEND</span></div>
+      <p class="muted">3MF can arrive with plates, parts and colour assignment already set for Bambu Studio, OrcaSlicer or PrusaSlicer. Source files are kept for reorders.</p>
+    </article>
+    <article class="panel b-3 rv">
+      <span class="eyebrow accent">Print methods</span>
+      <h2 style="font-size:1.3rem">Prepared for your process</h2>
+      <ul class="spec-list">
+        <li><span>FDM and FFF</span><b>Any nozzle</b></li>
+        <li><span>MSLA and SLA resin</span><b>Hollow, drain holes</b></li>
+        <li><span>SLS and MJF nylon</span><b>Powder escape</b></li>
+        <li><span>Multicolour</span><b>AMS, MMU</b></li>
+        <li><span>LED lanterns</span><b>Light cavity</b></li>
+      </ul>
+    </article>
+    <article class="panel b-2 rv">
+      <span class="eyebrow accent">Mesh quality</span>
+      <h2 style="font-size:1.3rem">Clean geometry, every time</h2>
+      <ul class="checklist">
+        <li><svg class="icon"><use href="#i-check"/></svg>Watertight and manifold</li>
+        <li><svg class="icon"><use href="#i-check"/></svg>Zero non manifold edges</li>
+        <li><svg class="icon"><use href="#i-check"/></svg>Unified normals</li>
+        <li><svg class="icon"><use href="#i-check"/></svg>No self intersections</li>
+        <li><svg class="icon"><use href="#i-check"/></svg>Optimised polycount</li>
+      </ul>
+    </article>
+    <article class="panel b-4 rv">
+      <span class="eyebrow accent">Print preparation</span>
+      <h2 style="font-size:1.3rem">The details that decide if a print works</h2>
+      <ul class="spec-list">
+        <li><span>Minimum wall thickness</span><b>0.8 mm resin, 1.2 mm FDM</b></li>
+        <li><span>Minimum feature size</span><b>Matched to nozzle or XY</b></li>
+        <li><span>Overhangs</span><b>Kept under 45°</b></li>
+        <li><span>Split parts</span><b>Alignment pins, 0.2 mm clearance</b></li>
+        <li><span>Base</span><b>Flat, chamfered first layer</b></li>
+        <li><span>Lantern walls</span><b>Even thickness for diffusion</b></li>
+        <li><span>Scale accuracy</span><b>True to the millimetre</b></li>
+      </ul>
+    </article>
+    <article class="panel b-6 rv" style="grid-template-columns:minmax(0,1fr) auto;align-items:center">
+      <div style="display:grid;gap:8px">
+        <h2 style="font-size:1.3rem">Custom printer or unusual setup?</h2>
+        <p class="muted">Large format, a modified machine or a material we have not seen. Send us your build volume, nozzle, layer height or resin settings and we prepare every file for it.</p>
+      </div>
+      <a class="btn btn-ink" data-mail="My printer setup" href="#">Tell us your setup <svg class="icon go"><use href="#i-arrow"/></svg></a>
+    </article>
+  </div>
+</section>
+
+<section class="sec" style="padding-top:0">
+  <div class="wrap">
+    <div class="cta-band">
+      <div><h2>See it on your own printer</h2><p>Send one order and print the result. The first model is free.</p></div>
+      <div class="btns"><a class="btn btn-ink" href="start.html">Get a free model <svg class="icon go"><use href="#i-arrow"/></svg></a><a class="btn btn-line" href="work.html">See more work</a></div>
+    </div>
+  </div>
+</section>

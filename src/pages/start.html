@@ -1,0 +1,101 @@
+<!--meta {"title": "Get a free model | CubiX", "desc": "Send one real order. We model it free and deliver print ready files within 48 hours.", "nav": "start"}-->
+
+<section class="phero">
+  <div class="wrap">
+    <div class="crumbs"><a href="index.html">Home</a><span>/</span><span>Free model</span></div>
+    <h1>Send one order. We model it free.</h1>
+    <p class="lead">Every Etsy shop owner or team gets their first model free, simple or complex. Upload the references exactly as your customer sent them. We confirm within minutes and send a preview within 24 hours.</p>
+    <div class="phero-meta"><span class="badge ok">No card needed</span><span class="badge">No contract</span><span class="badge hot">Preview within 24 h</span></div>
+  </div>
+</section>
+
+<section class="sec tight">
+  <div class="wrap start">
+    <form class="form" id="orderForm" novalidate>
+      <fieldset>
+        <legend><span class="n">1</span>About you</legend>
+        <div class="frow">
+          <div class="field"><label for="f-name">Your name</label><input id="f-name" name="name" required autocomplete="name"></div>
+          <div class="field"><label for="f-email">Email</label><input id="f-email" name="email" type="email" required autocomplete="email"></div>
+        </div>
+        <div class="field"><label for="f-shop">Shop or website <em>optional</em></label><input id="f-shop" name="shop" placeholder="etsy.com/shop/yourshop"></div>
+      </fieldset>
+
+      <fieldset>
+        <legend><span class="n">2</span>The order</legend>
+        <div class="frow">
+          <div class="field"><label for="f-size">Finished size</label><input id="f-size" name="size" placeholder="For example 6 in or 150 mm wide"></div>
+          <div class="field"><label for="f-printer">Printer and material</label><input id="f-printer" name="printer" placeholder="For example Bambu X1C, PLA"></div>
+        </div>
+        <div class="opts">
+          <span class="opts-label">What should we model?</span>
+          <div class="opt-row">
+            <label class="opt"><input type="radio" name="product" value="House replica" checked><span>House replica</span></label>
+            <label class="opt"><input type="radio" name="product" value="LED lantern"><span>LED lantern</span></label>
+            <label class="opt"><input type="radio" name="product" value="Keepsake or ornament"><span>Keepsake or ornament</span></label>
+            <label class="opt"><input type="radio" name="product" value="Landmark or building"><span>Landmark or building</span></label>
+            <label class="opt"><input type="radio" name="product" value="Something else"><span>Something else</span></label>
+          </div>
+        </div>
+        <div class="opts">
+          <span class="opts-label">Files you need</span>
+          <div class="opt-row">
+            <label class="opt"><input type="checkbox" name="formats" value="STL" checked><span>STL</span></label>
+            <label class="opt"><input type="checkbox" name="formats" value="3MF"><span>3MF</span></label>
+            <label class="opt"><input type="checkbox" name="formats" value="OBJ"><span>OBJ</span></label>
+            <label class="opt"><input type="checkbox" name="formats" value="STEP"><span>STEP</span></label>
+            <label class="opt"><input type="checkbox" name="formats" value="Not sure"><span>Not sure, recommend</span></label>
+          </div>
+        </div>
+        <div class="field"><label for="f-notes">Details from your customer</label><textarea id="f-notes" name="notes" placeholder="Colours, pets, cars, a name plaque, a deadline"></textarea></div>
+      </fieldset>
+
+      <fieldset>
+        <legend><span class="n">3</span>Photos and files</legend>
+        <div class="drop" id="drop">
+          <input id="f-files" type="file" name="files" multiple accept="image/*,.heic,.pdf,.zip,.stl,.3mf,.obj,.dwg">
+          <label for="f-files">
+            <span class="ic"><svg class="icon"><use href="#i-upload"/></svg></span>
+            <b>Drop photos here or click to browse</b>
+            <span>JPG, PNG, HEIC, PDF or ZIP. Up to 20 files, 25 MB each.</span>
+          </label>
+          <ul class="flist" id="fileList"></ul>
+        </div>
+        <p class="muted" style="font-size:.9rem">Private to your order. We never contact your customer, and nothing we deliver carries our name.</p>
+      </fieldset>
+
+      <fieldset>
+        <legend><span class="n">4</span>How you would like to work</legend>
+        <div class="opt-row">
+          <label class="opt"><input type="radio" name="channel" value="Direct" checked><span>Direct</span></label>
+          <label class="opt"><input type="radio" name="channel" value="Upwork"><span>Upwork</span></label>
+          <label class="opt"><input type="radio" name="channel" value="Fiverr"><span>Fiverr</span></label>
+          <label class="opt"><input type="radio" name="channel" value="Not sure"><span>Not sure yet</span></label>
+        </div>
+      </fieldset>
+
+      <input type="text" name="company_website" class="hp" tabindex="-1" autocomplete="off" aria-hidden="true">
+      <div class="form-foot">
+        <button class="btn btn-accent btn-block" type="submit" id="orderBtn">Send my free order <svg class="icon go"><use href="#i-arrow"/></svg></button>
+        <p class="form-msg" id="formMsg" role="status" aria-live="polite"></p>
+        <p class="muted" style="font-size:.88rem">Your files are only used for your order. See our <a href="privacy.html">privacy notes</a>.</p>
+      </div>
+    </form>
+
+    <aside class="next">
+      <span class="eyebrow">What happens next</span>
+      <h2 style="font-size:1.4rem;color:#fff">Your order, step by step</h2>
+      <ol>
+        <li><b>We confirm by email <span class="t">minutes</span></b><span>We check the references and confirm your delivery time.</span></li>
+        <li><b>Preview renders <span class="t">within 24 h</span></b><span>Forward them to your customer. Ask for any changes.</span></li>
+        <li><b>Final print files <span class="t">within 48 h</span></b><span>Checked, scaled and ready to slice.</span></li>
+        <li><b>You print it <span class="t">free</span></b><span>Your first model costs nothing. Later orders are paid after approval.</span></li>
+      </ol>
+      <div class="contact-card">
+        <span class="eyebrow">Rather talk first?</span>
+        <div class="mailbox"><a data-mail data-mail-text href="#">rizwan@coraxys.com</a><button class="copy" data-copy>Copy</button></div>
+        <div class="plat"><button data-pop="upwork">Upwork <svg class="icon"><use href="#i-arrow"/></svg></button><button data-pop="fiverr">Fiverr <svg class="icon"><use href="#i-arrow"/></svg></button></div>
+      </div>
+    </aside>
+  </div>
+</section>

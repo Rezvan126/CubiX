@@ -1,0 +1,71 @@
+<form class="form" id="orderForm" novalidate>
+  <fieldset>
+    <legend><span class="n">1</span>Your customer's photos</legend>
+    <div class="drop" id="drop">
+      <input id="f-files" type="file" name="files" multiple accept="image/*,.heic,.pdf,.zip,.stl,.3mf,.obj,.dwg" aria-describedby="files-help files-err">
+      <label for="f-files">
+        <span class="ic"><svg class="icon"><use href="#i-upload"/></svg></span>
+        <b>Drop photos here or choose files</b>
+        <span id="files-help">The front of the house is essential. Sides and back help. JPG, PNG, HEIC, PDF or ZIP, up to 20 files of 25 MB.</span>
+      </label>
+      <ul class="flist" id="fileList"></ul>
+    </div>
+    <p class="field-err" id="files-err" hidden></p>
+    <ul class="checklist" style="font-size:.93rem">
+      <li><svg class="icon"><use href="#i-check"/></svg><span>Private to your order. We never contact your customer.</span></li>
+      <li><svg class="icon"><use href="#i-check"/></svg><span>White label. Nothing we deliver carries our name. NDA on request.</span></li>
+    </ul>
+  </fieldset>
+
+  <fieldset>
+    <legend><span class="n">2</span>Where to send the model</legend>
+    <div class="frow">
+      <div class="field"><label for="f-name">Your name</label><input id="f-name" name="name" required autocomplete="name" aria-describedby="name-err"><p class="field-err" id="name-err" hidden></p></div>
+      <div class="field"><label for="f-email">Email</label><input id="f-email" name="email" type="email" required autocomplete="email" aria-describedby="email-err"><p class="field-err" id="email-err" hidden></p></div>
+    </div>
+    <div class="field"><label for="f-shop">Shop or website <em>optional</em></label><input id="f-shop" name="shop" placeholder="etsy.com/shop/yourshop"></div>
+  </fieldset>
+
+  <fieldset>
+    <legend><span class="n">3</span>Order details <em style="font-family:var(--text);font-style:normal;font-weight:500;font-size:.95rem;text-transform:none;color:var(--muted)">optional, we can ask by email</em></legend>
+    <div class="frow">
+      <div class="field"><label for="f-size">Finished size</label><input id="f-size" name="size" placeholder="For example 6 in or 150 mm wide"></div>
+      <div class="field"><label for="f-printer">Printer and material</label><input id="f-printer" name="printer" placeholder="For example Bambu X1C, PLA"></div>
+    </div>
+    <div class="opts">
+      <span class="opts-label" id="lbl-product">Product</span>
+      <div class="opt-row" role="radiogroup" aria-labelledby="lbl-product">
+        <label class="opt"><input type="radio" name="product" value="House replica" checked><span>House replica</span></label>
+        <label class="opt"><input type="radio" name="product" value="LED lantern"><span>LED lantern</span></label>
+        <label class="opt"><input type="radio" name="product" value="Keepsake or ornament"><span>Keepsake</span></label>
+        <label class="opt"><input type="radio" name="product" value="Landmark or commercial"><span>Landmark</span></label>
+      </div>
+    </div>
+    <div class="opts">
+      <span class="opts-label" id="lbl-formats">Files you need</span>
+      <div class="opt-row" role="radiogroup" aria-labelledby="lbl-formats">
+        <label class="opt"><input type="radio" name="formats" value="Not sure, recommend" checked><span>Not sure, recommend</span></label>
+        <label class="opt"><input type="radio" name="formats" value="STL"><span>STL</span></label>
+        <label class="opt"><input type="radio" name="formats" value="3MF with plates"><span>3MF</span></label>
+        <label class="opt"><input type="radio" name="formats" value="Other, see notes"><span>Other</span></label>
+      </div>
+    </div>
+    <div class="field"><label for="f-notes">Notes from your customer</label><textarea id="f-notes" name="notes" placeholder="Colours, pets, cars, a name plaque, a deadline"></textarea></div>
+    <div class="opts">
+      <span class="opts-label" id="lbl-channel">How you would like to work</span>
+      <div class="opt-row" role="radiogroup" aria-labelledby="lbl-channel">
+        <label class="opt"><input type="radio" name="channel" value="Direct" checked><span>Direct</span></label>
+        <label class="opt"><input type="radio" name="channel" value="Upwork"><span>Upwork</span></label>
+        <label class="opt"><input type="radio" name="channel" value="Fiverr"><span>Fiverr</span></label>
+        <label class="opt"><input type="radio" name="channel" value="Not sure"><span>Not sure yet</span></label>
+      </div>
+    </div>
+  </fieldset>
+
+  <input type="text" name="company_website" class="hp" tabindex="-1" autocomplete="off" aria-hidden="true">
+  <div class="form-foot">
+    <button class="btn btn-go btn-block" type="submit" id="orderBtn"><span>Send a free order</span> <svg class="icon go"><use href="#i-arrow"/></svg></button>
+    <div class="form-msg" id="formMsg" role="status" aria-live="polite"></div>
+    <p class="muted" style="font-size:.9rem">Your first model is free. After that you pay per model, only after your customer approves. <a href="privacy.html">Privacy</a></p>
+  </div>
+</form>

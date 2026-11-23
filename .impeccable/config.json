@@ -1,0 +1,17 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "broken-image",
+        "value": "*",
+        "files": [
+          "src/partials/footer.html"
+        ],
+        "createdAt": "2026-11-22T02:27:08.539Z",
+        "reason": "Claude: lightbox img slots are filled by site.js at open time; Assessment B confirmed no browser load fails"
+      }
+    ]
+  }
+}
