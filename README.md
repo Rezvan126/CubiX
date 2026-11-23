@@ -35,23 +35,17 @@ The website, the client portal and the team dashboard all run on Cloudflare Page
 - Every request that changes data must carry the `x-cubix` header, which blocks cross site request forgery.
 - Every file download is checked against the order's shop.
 
-## One time setup (about 15 minutes)
-You need a free Cloudflare account and Node.js installed.
+## Live setup
+- **Code:** GitHub `Rezvan126/CubiX`, connected to the Cloudflare Pages project `cubix3d`. Every push to `main` goes live at https://cubix3d.pages.dev within about a minute.
+- **Database:** Cloudflare D1 `cubix-db`, bound as `DB` in `wrangler.toml`.
+- **Files:** while R2 is off, uploads are split into chunks and stored inside D1. That stays inside the free plan, with 5 GB of space. To move to R2 later:
+  1. Enable R2 and run `npx wrangler r2 bucket create cubix-files`.
+  2. Uncomment the `[[r2_buckets]]` block in `wrangler.toml` and push.
+  3. New uploads then go to R2. Older files keep working from D1.
 
-```bash
-npm install
-npx wrangler login
-npx wrangler d1 create scalehaus
-```
-Paste the `database_id` that command prints into `wrangler.toml`. Then:
+To create the database on a new account, run `npx wrangler d1 create cubix-db`, put the id in `wrangler.toml`, then run `npm run db:remote`.
 
-```bash
-npm run db:remote
-npx wrangler r2 bucket create scalehaus-orders
-npm run deploy
-```
-
-In the Cloudflare dashboard (Workers & Pages, scalehaus, Settings, Variables and Secrets):
+In the Cloudflare dashboard (Workers & Pages, cubix3d, Settings, Variables and Secrets):
 - `BOOTSTRAP_KEY` (required once): any long random text. It is used to create the first admin.
 - `SITE_URL`: your domain, for example `https://cubix3d.com`. It is used in emailed links.
 - `RESEND_API_KEY` and `MAIL_FROM` (optional): a free [Resend](https://resend.com) account sends invites, password resets and "preview ready" emails. Without these, the dashboard shows each link so you can send it yourself.
@@ -75,7 +69,7 @@ Then sign in at `/team/`. Add your modelers under Team: each one gets a link to 
 npm install
 ./tests/fresh.sh
 ```
-This starts a fresh local database and the server on http://localhost:8788, with the bootstrap key `local-bootstrap-key` taken from `.dev.vars`. Then run:
+This starts a fresh local database and the server on http://localhost:8788. First create a `.dev.vars` file containing `BOOTSTRAP_KEY=local-bootstrap-key`. Then run:
 
 ```bash
 npm run test:api

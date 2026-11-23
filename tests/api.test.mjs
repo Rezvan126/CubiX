@@ -351,6 +351,14 @@ async function run() {
   check('cannot assign to an inactive member', r.status === 422, r.data);
   await admin.patch('/team/members/' + mod2, { active: true });
 
+  {
+    const { randomBytes, createHash } = await import('crypto');
+    const big = randomBytes(4 * 1024 * 1024 + 123), h = b => createHash('sha256').update(Buffer.from(b)).digest('hex');
+    r = await shopB.post('/client/orders', orderForm({ title: 'Big file check' }, [['big.stl', new Blob([big], { type: 'model/stl' })]]), { form: true });
+    const bigId = (await shopB.get('/client/orders/' + r.data.id)).data.order.files[0].id;
+    r = await shopB.get('/files/' + bigId);
+    check('4 MB file comes back byte for byte (multi chunk storage)', r.status === 200 && h(r.data) === h(big), r.status);
+  }
   // forgot password: same answer for real and unknown emails
   const r1 = await anon.post('/auth/forgot', { email: em('shopb') }), r2 = await anon.post('/auth/forgot', { email: 'nobody@nowhere.test' });
   check('forgot password does not reveal which emails exist', r1.status === 200 && r2.status === 200 && JSON.stringify(r1.data) === JSON.stringify(r2.data));

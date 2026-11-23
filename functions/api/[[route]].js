@@ -3,7 +3,7 @@ import {
   STATUSES, OPEN_STATUSES, PLANS, TURNAROUND_HOURS, HttpError, json, now, addHours, uid, orderCode,
   hashPassword, verifyPassword, clean, validEmail, validPassword, createSession, clearCookie, getUser,
   destroySession, makeLinkToken, useLinkToken, siteUrl, sendEmail, notifyTeam, logEvent, storeFiles,
-  readBody, field, sha256,
+  readBody, field, sha256, readFile,
 } from '../_lib/core.js';
 
 const routes = [];
@@ -238,10 +238,11 @@ on('POST', '/client/orders/:id/revision', CLIENT, async ({ request, env, params,
 on('GET', '/files/:id', ANY, async ({ env, params, user, url }) => {
   const f = await one(env, 'SELECT f.*, o.shop_id FROM files f JOIN orders o ON o.id = f.order_id WHERE f.id = ?', params.id);
   if (!f || (!isTeam(user) && f.shop_id !== user.shop_id)) throw new HttpError(404, 'not_found', 'File not found.');
-  const obj = env.FILES ? await env.FILES.get(f.r2_key) : null;
-  if (!obj) throw new HttpError(404, 'not_found', 'File not found.');
+  const body = await readFile(env, f.r2_key);
+  if (!body) throw new HttpError(404, 'not_found', 'File not found.');
   const inline = url.searchParams.get('inline') === '1' && /^image\//.test(f.type || '');
-  return new Response(obj.body, { headers: {
+  return new Response(body, { headers: {
+    'content-length': String(f.size),
     'content-type': inline ? f.type : (f.type || 'application/octet-stream'),
     'content-disposition': `${inline ? 'inline' : 'attachment'}; filename="${f.name.replace(/["\\\r\n]/g, '_')}"`,
     'cache-control': 'private, max-age=3600', 'x-content-type-options': 'nosniff',

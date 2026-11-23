@@ -123,21 +123,24 @@ export async function logEvent(env, orderId, userId, type, detail = null) {
 export function safeName(name, i) { return (String(name || '').replace(/[^\w.\-() ]/g, '_').slice(0, 120)) || `file${i}`; }
 export async function storeFiles(env, orderId, list, kind, userId) {
   const files = list.filter(f => f && typeof f === 'object' && typeof f.arrayBuffer === 'function' && f.size > 0);
-  if (files.length && !env.FILES) throw new HttpError(503, 'storage_off', 'File uploads are switched off for a moment. Please email your photos to rizwan@coraxys.com and we start right away.');
   if (files.length > MAX_FILES) throw new HttpError(413, 'too_many_files', `Up to ${MAX_FILES} files per upload.`);
   for (const f of files) if (f.size > MAX_FILE) throw new HttpError(413, 'file_too_large', `${f.name} is over 25 MB.`);
   const row = await env.DB.prepare('SELECT COALESCE(MAX(version), 0) AS v FROM files WHERE order_id = ? AND kind = ?').bind(orderId, kind).first();
   const version = kind === 'reference' ? 1 : (row.v || 0) + 1;
-  const stmts = [], out = [];
+  const stmts = [], out = [], written = [];
+  try {
   for (const [i, f] of files.entries()) {
     const id = uid('f_');
-    const key = `orders/${orderId}/${kind}/v${version}/${id}_${safeName(f.name, i)}`;
-    await env.FILES.put(key, f.stream(), { httpMetadata: { contentType: f.type || 'application/octet-stream' } });
+    let key = `orders/${orderId}/${kind}/v${version}/${id}_${safeName(f.name, i)}`;
+    if (env.FILES) await env.FILES.put(key, f.stream(), { httpMetadata: { contentType: f.type || 'application/octet-stream' } });
+    else { await putChunks(env, id, f); key = 'd1:' + id; }
+    written.push(key);
     stmts.push(env.DB.prepare('INSERT INTO files (id, order_id, kind, version, r2_key, name, size, type, uploaded_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .bind(id, orderId, kind, version, key, String(f.name || `file${i}`).slice(0, 200), f.size, f.type || null, userId, now()));
     out.push({ id, name: f.name, size: f.size });
   }
   if (stmts.length) await env.DB.batch(stmts);
+  } catch (e) { await removeBlobs(env, written); throw e; }
   return { files: out, version };
 }
 
@@ -148,3 +151,33 @@ export async function readBody(request) {
   return {};
 }
 export const field = (body, k) => (body instanceof FormData ? body.get(k) : body?.[k]);
+
+// ---------- file contents: R2 when bound, otherwise chunked into D1 (free plan) ----------
+const CHUNK = 1500 * 1024;
+async function putChunks(env, fileId, f) {
+  const buf = new Uint8Array(await f.arrayBuffer());
+  const stmts = [];
+  for (let i = 0, n = 0; i < buf.length; i += CHUNK, n++) stmts.push(env.DB.prepare('INSERT INTO file_chunks (file_id, idx, data) VALUES (?, ?, ?)').bind(fileId, n, buf.subarray(i, i + CHUNK)));
+  for (let i = 0; i < stmts.length; i += 4) await env.DB.batch(stmts.slice(i, i + 4));
+}
+async function removeBlobs(env, keys) {
+  for (const k of keys) {
+    try { if (k.startsWith('d1:')) await env.DB.prepare('DELETE FROM file_chunks WHERE file_id = ?').bind(k.slice(3)).run(); else if (env.FILES) await env.FILES.delete(k); } catch {}
+  }
+}
+// Returns a ReadableStream of the file, or null if it is missing.
+export async function readFile(env, key) {
+  if (!key.startsWith('d1:')) { const obj = env.FILES ? await env.FILES.get(key) : null; return obj ? obj.body : null; }
+  const id = key.slice(3);
+  const c = await env.DB.prepare('SELECT COUNT(*) AS n FROM file_chunks WHERE file_id = ?').bind(id).first();
+  if (!c || !c.n) return null;
+  let idx = 0;
+  return new ReadableStream({
+    async pull(ctrl) {
+      if (idx >= c.n) return ctrl.close();
+      const row = await env.DB.prepare('SELECT data FROM file_chunks WHERE file_id = ? AND idx = ?').bind(id, idx++).first();
+      if (!row) return ctrl.close();
+      ctrl.enqueue(new Uint8Array(row.data));
+    },
+  });
+}

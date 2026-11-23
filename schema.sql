@@ -109,3 +109,11 @@ CREATE TABLE IF NOT EXISTS events (
   created_at  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_events_order ON events(order_id);
+
+-- File contents when R2 is not enabled: each file is split into chunks under D1's 2 MB row limit.
+CREATE TABLE IF NOT EXISTS file_chunks (
+  file_id     TEXT NOT NULL,
+  idx         INTEGER NOT NULL,
+  data        BLOB NOT NULL,
+  PRIMARY KEY (file_id, idx)
+);
