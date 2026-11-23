@@ -1,8 +1,11 @@
-/assets/*
-  Cache-Control: public, max-age=604800
-/assets/models/*
-  Cache-Control: public, max-age=2592000, immutable
-/*
-  X-Content-Type-Options: nosniff
-  Referrer-Policy: strict-origin-when-cross-origin
-  Permissions-Policy: camera=(), microphone=(), geolocation=()
+# The old pages.dev address stays online but is kept out of search results.
+https://cubix3d.pages.dev/*
+  X-Robots-Tag: noindex
+
+/team/*
+  X-Robots-Tag: noindex, nofollow
+/app/*
+  X-Robots-Tag: noindex, nofollow
+
+/llms.txt
+  Content-Type: text/plain; charset=utf-8

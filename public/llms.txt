@@ -1,0 +1,30 @@
+# CubiX
+
+> CubiX is a custom 3D modeling service for Etsy sellers, 3D print farms and print shops. We turn customer photos, sketches and drawings into print ready 3D models (STL, 3MF, OBJ, STEP), delivered within 24 to 48 hours, every day of the year. The first model is free for any shop, and payment comes only after the customer approves the model.
+
+CubiX works as a white label modeling team: shops sell custom prints under their own brand, and we build the 3D files behind the scenes. We never contact the shop's customers. CubiX is a service of Axys3D (https://www.axys3d.com), an AEC production partner services company.
+
+## Key facts
+- Service: custom 3D modeling for 3D printing, from photos, sketches, floor plans, elevations or Google Street View
+- Best known for: custom house miniatures and house replicas (2000+ house models in the last 11 months)
+- Also models: LED lantern houses and night lights, landmarks and churches, signs and name plaques, ornaments and keepsakes, home decor, miniatures and tabletop terrain, functional parts and prototypes
+- Turnaround: preview renders within 24 hours, final files within 48 hours maximum, weekends and holidays included
+- Files: watertight, manifold STL and 3MF, plus OBJ, PLY, STEP, FBX and GLB on request; split parts for multicolour or painting; LED cavities and cut through windows
+- Printers: FDM, resin, SLS and multicolour systems
+- Price: usually $50 to $150 per model depending on size and detail; monthly packages for busy shops
+- First model: free for any Etsy shop owner or team, any complexity
+- Payment: after approval, through Upwork, Fiverr, Payoneer or direct transfer; no upfront payment
+- Revisions: included until the customer is happy
+- Ownership: the shop owns the files once paid
+- Volume: dedicated teams for large volumes and holiday peaks
+- Order or ask a question: https://cubix.axys3d.com/start
+
+## Pages
+- [Home](https://cubix.axys3d.com/): overview, how an order works, what we model
+- [Portfolio](https://cubix.axys3d.com/work): 24 real customer orders shown next to the photos they were built from
+- [How it works](https://cubix.axys3d.com/how-it-works): the order process from upload to print ready files
+- [Pricing](https://cubix.axys3d.com/pricing): price ranges, estimator, payment options and monthly packages
+- [Technical specs](https://cubix.axys3d.com/specs): file formats, print preparation and a 3D viewer
+- [FAQ](https://cubix.axys3d.com/faq): 25 answers about pricing, turnaround, files, printers and privacy
+- [About](https://cubix.axys3d.com/about): the team behind CubiX
+- [Get a free model](https://cubix.axys3d.com/start): send a real order and get it modeled free

@@ -10,19 +10,61 @@ head, header, footer = part('head.html'), part('header.html'), part('footer.html
 VIEWER_HEAD = '<script type="importmap">{ "imports": { "three": "./assets/vendor/three.module.min.js", "three/addons/": "./assets/vendor/addons/" } }</script>'
 VIEWER_JS = '<script type="module" src="assets/js/viewer.js"></script>'
 
+SITE = 'https://cubix.axys3d.com'
+import datetime, html as htmlmod
+TODAY = datetime.date.today().isoformat()
+ORG = {"@type": "Organization", "@id": SITE + "/#org", "name": "CubiX", "url": SITE + "/",
+       "logo": SITE + "/android-chrome-512x512.png", "email": "rizwan@coraxys.com",
+       "description": "Custom 3D modeling service for Etsy sellers and 3D print shops. Print ready STL and 3MF models from customer photos, delivered in 24 to 48 hours.",
+       "parentOrganization": {"@type": "Organization", "name": "Axys3D", "url": "https://www.axys3d.com"},
+       "contactPoint": {"@type": "ContactPoint", "contactType": "sales", "email": "rizwan@coraxys.com", "availableLanguage": ["English"]}}
+SERVICE = {"@type": "ProfessionalService", "@id": SITE + "/#service", "name": "CubiX 3D modeling for print shops", "url": SITE + "/",
+           "image": SITE + "/og-image-1200x630.png", "email": "rizwan@coraxys.com", "priceRange": "$50 to $150 per model",
+           "areaServed": "Worldwide", "provider": {"@id": SITE + "/#org"},
+           "openingHoursSpecification": {"@type": "OpeningHoursSpecification", "dayOfWeek": ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"], "opens": "00:00", "closes": "23:59"},
+           "serviceType": "Custom 3D modeling for 3D printing",
+           "description": "We turn customer photos, sketches and drawings into watertight, print ready 3D models (STL, 3MF, OBJ, STEP) for FDM, resin and SLS printers. House replicas, LED lantern houses, keepsakes, ornaments, signs, miniatures and custom parts. Delivered in 24 to 48 hours, every day. First model free, payment after approval.",
+           "hasOfferCatalog": {"@type": "OfferCatalog", "name": "3D modeling services", "itemListElement": [
+               {"@type": "Offer", "itemOffered": {"@type": "Service", "name": n}, "priceSpecification": {"@type": "PriceSpecification", "minPrice": 50, "maxPrice": 150, "priceCurrency": "USD"}}
+               for n in ["House replica 3D model from photos", "LED lantern house model", "Landmark and building model", "Sign and name plaque model", "Ornament and keepsake model", "Miniature and terrain model", "Functional part and prototype model"]]}}
+WEBSITE = {"@type": "WebSite", "@id": SITE + "/#website", "name": "CubiX", "url": SITE + "/", "publisher": {"@id": SITE + "/#org"}}
+def page_url(name): return SITE + '/' if name == 'index.html' else SITE + '/' + name[:-5]
+def strip(t): return htmlmod.unescape(re.sub(r'<[^>]+>', '', t)).strip()
+def jsonld(name, meta, body):
+    graph = [ORG, WEBSITE] if name == 'index.html' else [ORG]
+    if name in ('index.html', 'pricing.html', 'how-it-works.html'): graph.append(SERVICE)
+    if name != 'index.html':
+        graph.append({"@type": "BreadcrumbList", "itemListElement": [
+            {"@type": "ListItem", "position": 1, "name": "Home", "item": SITE + "/"},
+            {"@type": "ListItem", "position": 2, "name": meta['title'].split(' | ')[0].split(':')[0], "item": page_url(name)}]})
+    if name == 'faq.html':
+        qa = re.findall(r'<summary>(.*?)<span class="pm">.*?<div class="ans">(.*?)</div>', body, re.S)
+        graph.append({"@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": strip(q), "acceptedAnswer": {"@type": "Answer", "text": strip(a)}} for q, a in qa]})
+    return '<script type="application/ld+json">' + json.dumps({"@context": "https://schema.org", "@graph": graph}, ensure_ascii=False).replace('</', '<\\/') + '</script>'
+sitemap = []
+
 for name in sorted(os.listdir(os.path.join(SRC, 'pages'))):
     raw = open(os.path.join(SRC, 'pages', name), encoding='utf-8').read()
     m = re.match(r'\s*<!--meta (.*?)-->\n?', raw, re.S)
     meta = json.loads(m.group(1)); body = raw[m.end():]
     body = re.sub(r'\{\{include:([\w-]+)\}\}', lambda mm: part(mm.group(1) + '.html'), body)
     viewer = meta.get('viewer', False)
+    noindex = meta.get('noindex', False)
+    if not noindex: sitemap.append((page_url(name), '1.0' if name == 'index.html' else '0.5' if name == 'privacy.html' else '0.8'))
     html = (head.replace('{{title}}', meta['title']).replace('{{desc}}', meta['desc'])
+                .replace('{{canonical}}', page_url(name)).replace('{{robots}}', 'noindex, follow' if noindex else 'index, follow, max-image-preview:large')
+                .replace('{{jsonld}}', jsonld(name, meta, body))
                 .replace('{{nav}}', meta['nav']).replace('{{headExtra}}', VIEWER_HEAD if viewer else '')
             + header + body + footer.replace('{{scripts}}', VIEWER_JS if viewer else ''))
     # mark the current page in both menus
     html = html.replace(f'data-nav="{meta["nav"]}"', f'data-nav="{meta["nav"]}" aria-current="page"')
     open(os.path.join(OUT, name), 'w', encoding='utf-8').write(html)
     print('built', name)
+
+open(os.path.join(OUT, 'sitemap.xml'), 'w', encoding='utf-8').write(
+    '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+    + ''.join(f'  <url><loc>{u}</loc><lastmod>{TODAY}</lastmod><priority>{p}</priority></url>\n' for u, p in sitemap) + '</urlset>\n')
+print('built sitemap.xml')
 
 # ---- portal apps: src/panel/team.html -> public/team/index.html, src/panel/app.html -> public/app/index.html
 sprite = header[:header.index('</svg>')]
