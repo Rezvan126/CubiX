@@ -3,7 +3,7 @@ import {
   STATUSES, OPEN_STATUSES, PLANS, TURNAROUND_HOURS, HttpError, json, now, addHours, uid, orderCode,
   hashPassword, verifyPassword, clean, validEmail, validPassword, createSession, clearCookie, getUser,
   destroySession, makeLinkToken, useLinkToken, siteUrl, logEvent, storeFiles,
-  readBody, field, sha256, readFile, thumbMap, removeBlobs, attachUploads, uploadIds, CHUNK, MAX_UPLOAD,
+  readBody, field, sha256, readFile, thumbMap, removeBlobs, attachUploads, uploadIds, CHUNK, MAX_UPLOAD, readRange, RANGE_MAX,
 } from '../_lib/core.js';
 import { later, alertTeam, sendMail, emailHtml, emailReady, notifySettings } from '../_lib/notify.js';
 
@@ -537,16 +537,28 @@ on('POST', '/pins/:id/resolve', ANY, async ({ request, env, params, user }) => {
 });
 
 // ---------------------------------------------------------------- files (shared, access checked)
-on('GET', '/files/:id', ANY, async ({ env, params, user, url }) => {
+on('GET', '/files/:id', ANY, async ({ request, env, params, user, url }) => {
   const f = await one(env, 'SELECT f.*, o.shop_id FROM files f JOIN orders o ON o.id = f.order_id WHERE f.id = ?', params.id);
   if (!f || (!isTeam(user) && f.shop_id !== user.shop_id)) throw new HttpError(404, 'not_found', 'File not found.');
+  const inline = url.searchParams.get('inline') === '1' && /^image\//.test(f.type || '');
+  const disp = `${inline ? 'inline' : 'attachment'}; filename="${f.name.replace(/["\\\r\n]/g, '_')}"`;
+  // Range requests: large files are fetched in pieces of up to about 9 MB
+  const rg = /^bytes=(\d+)-(\d*)$/.exec(request.headers.get('range') || '');
+  if (rg) {
+    const start = Number(rg[1]); let end = rg[2] ? Math.min(Number(rg[2]), f.size - 1) : f.size - 1;
+    if (start >= f.size) return new Response(null, { status: 416, headers: { 'content-range': `bytes */${f.size}` } });
+    end = Math.min(end, start + RANGE_MAX - 1);
+    const part = await readRange(env, f.r2_key, f.size, start, end);
+    if (!part) throw new HttpError(404, 'not_found', 'File not found.');
+    return new Response(part, { status: 206, headers: { 'content-range': `bytes ${start}-${end}/${f.size}`, 'content-length': String(end - start + 1), 'accept-ranges': 'bytes',
+      'content-type': f.type || 'application/octet-stream', 'content-disposition': disp, 'cache-control': 'private, max-age=31536000, immutable', 'x-content-type-options': 'nosniff' } });
+  }
   const body = await readFile(env, f.r2_key);
   if (!body) throw new HttpError(404, 'not_found', 'File not found.');
-  const inline = url.searchParams.get('inline') === '1' && /^image\//.test(f.type || '');
   return new Response(body, { headers: {
-    'content-length': String(f.size),
+    'content-length': String(f.size), 'accept-ranges': 'bytes',
     'content-type': inline ? f.type : (f.type || 'application/octet-stream'),
-    'content-disposition': `${inline ? 'inline' : 'attachment'}; filename="${f.name.replace(/["\\\r\n]/g, '_')}"`,
+    'content-disposition': disp,
     // a file never changes once uploaded (a new version gets a new id), so the browser may keep it
     'cache-control': 'private, max-age=31536000, immutable', 'x-content-type-options': 'nosniff',
   } });

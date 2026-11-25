@@ -18,9 +18,9 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': 
 
 async function loadPart(file, color, clip) {
   const ext = String(file.name).split('.').pop().toLowerCase();
-  const res = await fetch(file.url, { credentials: 'same-origin' });
-  if (!res.ok) throw new Error(`${file.name} could not be loaded.`);
-  const buf = await res.arrayBuffer();
+  let buf;
+  if (file.load) buf = await file.load();
+  else { const res = await fetch(file.url, { credentials: 'same-origin' }); if (!res.ok) throw new Error(`${file.name} could not be loaded.`); buf = await res.arrayBuffer(); }
   const mat = () => new THREE.MeshStandardMaterial({ color, roughness: 0.62, metalness: 0.04, side: THREE.DoubleSide, clippingPlanes: clip });
   let obj;
   if (ext === 'stl') { const g = new STLLoader().parse(buf); g.computeVertexNormals(); obj = new THREE.Mesh(g, mat()); }

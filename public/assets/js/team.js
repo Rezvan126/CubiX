@@ -514,7 +514,7 @@
     // 3D viewers: inline for the change request, and in a window for any model file
     $$('[data-mount3d]', dr).forEach(el => CX.loadViewer().then(m => {
       const pins = el.dataset.pinset === 'cur' && cur ? cur.pins : [];
-      const v = m.mount(el, { url: CX.fileUrl(el.dataset.mount3d), name: el.dataset.name, pins });
+      const v = m.mount(el, { files: [{ url: CX.fileUrl(el.dataset.mount3d), name: el.dataset.name, load: () => CX.fetchFile(el.dataset.mount3d).then(x => x.blob.arrayBuffer()) }], pins });
       (S.viewers = S.viewers || []).push(v);
       $$(`[data-pins="${el.dataset.pinset}"] [data-pin]`, dr).forEach(b => b.addEventListener('click', () => v.focusPin(+b.dataset.pin)));
     }).catch(() => { el.innerHTML = '<p class="small muted">The 3D viewer could not load. Download the file instead.</p>'; }));

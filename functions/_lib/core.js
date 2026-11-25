@@ -244,3 +244,25 @@ export function uploadIds(body) {
   if (body instanceof FormData) return body.getAll('upload_ids').flatMap(v => String(v).split(',')).filter(Boolean);
   const v = body && body.upload_ids; return Array.isArray(v) ? v : v ? String(v).split(',') : [];
 }
+
+// A byte range of a stored file, for large downloads in pieces (each request stays small on the free plan).
+export const RANGE_MAX = 6 * CHUNK;
+export async function readRange(env, key, size, start, end) {
+  if (!key.startsWith('d1:')) {
+    if (!env.FILES) return null;
+    const obj = await env.FILES.get(key, { range: { offset: start, length: end - start + 1 } });
+    return obj ? obj.body : null;
+  }
+  const id = key.slice(3), first = Math.floor(start / CHUNK), last = Math.floor(end / CHUNK);
+  let idx = first;
+  return new ReadableStream({
+    async pull(ctrl) {
+      if (idx > last) return ctrl.close();
+      const row = await env.DB.prepare('SELECT data FROM file_chunks WHERE file_id = ? AND idx = ?').bind(id, idx).first();
+      if (!row) return ctrl.error(new Error('missing part'));
+      let buf = new Uint8Array(row.data);
+      const base = idx * CHUNK, from = Math.max(0, start - base), to = Math.min(buf.length, end - base + 1);
+      ctrl.enqueue(buf.subarray(from, to)); idx++;
+    },
+  });
+}

@@ -530,6 +530,17 @@ async function run() {
     check('the request keeps the seller and Etsy customer notes apart', r.data.order.notes === 'Front is the side with the red door' && r.data.order.customer_notes === 'Buyer: please add our cat on the porch', r.data.order);
     r = await shopA.get('/files/' + cf.id);
     check('the uploaded file comes back byte for byte', r.status === 200 && h(r.data) === h(big) && cf.size === big.length, r.status);
+    {
+      const rq = async (a, b) => { const x = await fetch(BASE + '/api/files/' + cf.id, { headers: { cookie: shopA.cookie, range: `bytes=${a}-${b}` } }); return { st: x.status, cr: x.headers.get('content-range'), buf: Buffer.from(await x.arrayBuffer()) }; };
+      const p1 = await rq(0, ''), total = big.length;
+      check('large files download in ranges of about 9 MB at most', p1.st === 206 && p1.cr === `bytes 0-${p1.buf.length - 1}/${total}` && p1.buf.length <= 6 * 1536000, p1.cr);
+      const mid = await rq(1536000 - 5, 1536000 + 4);
+      check('a range across two stored parts is exact', mid.st === 206 && mid.buf.length === 10 && Buffer.compare(mid.buf, Buffer.from(big.subarray(1536000 - 5, 1536000 + 5))) === 0, mid.cr);
+      const tail = await rq(total - 100, total + 500);
+      check('the last range stops at the end of the file', tail.st === 206 && tail.buf.length === 100 && tail.cr === `bytes ${total - 100}-${total - 1}/${total}`, tail.cr);
+      const out = await rq(total + 10, '');
+      check('a range past the end is refused', out.st === 416, out.st);
+    }
     r = await shopA.post('/client/orders', { title: 'Reuse', upload_ids: [u.id] });
     check('an upload cannot be attached twice', r.status === 422, r.data);
     let s = await shopA.post('/uploads', { name: 'x.stl', size: 3000000 });

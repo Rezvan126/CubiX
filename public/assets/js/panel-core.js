@@ -178,6 +178,49 @@
   }
   CX.convertHeic = convertHeic;
 
+  // ---------------------------------------------------------------- downloads in pieces
+  // Large files come down in ranges of about 9 MB (3 at a time) and are joined in the browser,
+  // because one long response is cut off on the free plan. Returns { blob, name }.
+  CX.fetchFile = async (id, onProgress) => {
+    const get = async (a, b) => {
+      for (let attempt = 1; ; attempt++) {
+        let r; try { r = await fetch(`/api/files/${id}`, { headers: { range: `bytes=${a}-${b}` }, credentials: 'same-origin' }); } catch { r = null; }
+        if (r && (r.status === 206 || r.status === 200)) return r;
+        if (r && r.status < 500 && r.status !== 429) throw new ApiError(r.status, { message: r.status === 404 ? 'File not found.' : 'Could not download the file.' });
+        if (attempt >= 3) throw new ApiError(0, { message: 'Download interrupted. Try again.' });
+        await new Promise(res => setTimeout(res, 800 * attempt));
+      }
+    };
+    const first = await get(0, '');
+    const name = ((first.headers.get('content-disposition') || '').match(/filename="([^"]+)"/) || [])[1] || 'file';
+    const cr = /\/(\d+)$/.exec(first.headers.get('content-range') || '');
+    const head = await first.blob();
+    const total = cr ? Number(cr[1]) : head.size;
+    if (head.size >= total) { onProgress && onProgress(1); return { blob: head, name }; }
+    const step = head.size, ranges = [];
+    for (let a = head.size; a < total; a += step) ranges.push([a, Math.min(total, a + step) - 1]);
+    const parts = new Array(ranges.length); let next = 0, got = head.size;
+    const worker = async () => { while (next < ranges.length) { const i = next++; const r = await get(...ranges[i]); parts[i] = await r.blob(); got += parts[i].size; onProgress && onProgress(got / total); } };
+    await Promise.all([worker(), worker(), worker()]);
+    const blob = new Blob([head, ...parts], { type: head.type });
+    if (blob.size !== total) throw new ApiError(0, { message: 'The download was incomplete. Try again.' });
+    return { blob, name };
+  };
+  // Every download link to /api/files/<id> goes through fetchFile, so big files always arrive whole.
+  document.addEventListener('click', async e => {
+    const a = e.target.closest('a[href^="/api/files/"]');
+    if (!a || a.target === '_blank' || /[?&]inline=1/.test(a.getAttribute('href')) || e.metaKey || e.ctrlKey) return;
+    const id = a.getAttribute('href').split('/')[3].split('?')[0];
+    e.preventDefault();
+    if (a.dataset.busy) return; a.dataset.busy = '1';
+    try {
+      const { blob, name } = await CX.fetchFile(id);
+      const url = URL.createObjectURL(blob), dl = document.createElement('a');
+      dl.href = url; dl.download = name; document.body.appendChild(dl); dl.click(); dl.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (err) { CX.fail(err); } finally { delete a.dataset.busy; }
+  });
+
   // ---------------------------------------------------------------- chunked uploads
   // Sends every file in 1.5 MB parts (3 at a time, each retried), so files up to 100 MB work on the free plan.
   // onProgress(0..1) covers all files together. Returns the upload ids to send with the order, message or hand in.
@@ -293,7 +336,7 @@
     CX.modal(`<div class="row" style="justify-content:space-between"><h2 class="ellipsis">${CX.esc(name)}</h2><button class="icon-btn" data-close aria-label="Close">${CX.icon('x')}</button></div><div id="m3d"></div>
       <div class="modal-actions"><a class="btn btn-line" href="${CX.fileUrl(id)}">${CX.icon('download')} Download</a></div>`, box => {
       box.classList.add('wide');
-      CX.loadViewer().then(m => { viewer = m.mount(CX.$('#m3d', box), { url: CX.fileUrl(id), name }); })
+      CX.loadViewer().then(m => { viewer = m.mount(CX.$('#m3d', box), { files: [{ url: CX.fileUrl(id), name, load: () => CX.fetchFile(id).then(x => x.blob.arrayBuffer()) }] }); })
         .catch(() => { CX.$('#m3d', box).innerHTML = '<p class="small muted">The 3D viewer could not load. Download the file instead.</p>'; });
       const obs = new MutationObserver(() => { if (!document.body.contains(box)) { obs.disconnect(); viewer && viewer.destroy(); } });
       obs.observe(document.body, { childList: true });
@@ -350,7 +393,7 @@
       try { await CX.post(`/pins/${f.dataset.reply}/replies`, { body }); await refresh(); } catch (err) { CX.fail(err); f.querySelector('button').disabled = false; }
     });
     CX.loadViewer().then(m => {
-      viewer = m.mount(el.querySelector('.rv3d'), { files: files.map(f => ({ url: CX.fileUrl(f.id), name: f.name })), pins: (o.pins || []).filter(p => p.status === 'open'), comment: canComment,
+      viewer = m.mount(el.querySelector('.rv3d'), { files: files.map(f => ({ url: CX.fileUrl(f.id), name: f.name, load: () => CX.fetchFile(f.id).then(x => x.blob.arrayBuffer()) })), pins: (o.pins || []).filter(p => p.status === 'open'), comment: canComment,
         onPick: canComment ? newPin : null,
         onPinClick: n => { active = n; const t = list.querySelector(`[data-pin="${n}"]`); if (t) { t.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } list.querySelectorAll('.thread-pin').forEach(x => x.classList.toggle('active', +x.dataset.pin === n)); } });
       draw();
