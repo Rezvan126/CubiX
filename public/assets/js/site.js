@@ -262,7 +262,7 @@
   /* ---------- order form ---------- */
   const form = $('#orderForm');
   if (form) {
-    const MAX_FILES = 20, MAX_FILE = 25 * 1024 * 1024;
+    const MAX_FILES = 20, MAX_FILE = 100 * 1024 * 1024;
     const drop = $('#drop'), input = $('#f-files'), list = $('#fileList'), msg = $('#formMsg'), btn = $('#orderBtn');
     let files = [];
     const say = (html, cls = '') => { msg.className = 'form-msg ' + cls; msg.innerHTML = html; };
@@ -314,7 +314,7 @@
       if (msg.textContent.startsWith('Converting')) say('');
       for (const f of fl) {
         if (files.length >= MAX_FILES) { say('Up to 20 files. Email the rest to us.', 'err'); break; }
-        if (f.size > MAX_FILE) { say(`${f.name} is over 25 MB. Email it to us or share a download link.`, 'err'); continue; }
+        if (f.size > MAX_FILE) { say(`${f.name} is over 100 MB. Email it to us or share a download link.`, 'err'); continue; }
         if (!files.some(x => x.name === f.name && x.size === f.size)) files.push(f);
       }
       render();
@@ -337,31 +337,51 @@
       if (!ok) return say('Please add your name and a valid email address.', 'err');
       if (!files.length) { drop.classList.add('invalid'); return say('Please add at least one photo or file.', 'err'); }
 
-      const fd = new FormData(form); fd.delete('files'); fd.set('formats', fd.getAll('formats').join(', '));
-      fd.set('notes', `Product: ${fd.get('product')}\n${fd.get('notes') || ''}`);
-      files.forEach(f => fd.append('files', f, f.name));
-      fd.set('source', leadSource());
-      btn.disabled = true; btn.firstChild.textContent = 'Sending ';
-      await addThumbs(fd, files);
+      const fd = new FormData(form);
+      const data = { name: fd.get('name'), email: fd.get('email'), shop: fd.get('shop'), size: fd.get('size'), printer: fd.get('printer'), product: fd.get('product'),
+        formats: fd.getAll('formats').join(', '), channel: fd.get('channel'), company_website: fd.get('company_website'),
+        notes: `Product: ${fd.get('product')}\n${fd.get('notes') || ''}`, source: leadSource() };
+      btn.disabled = true; btn.firstChild.textContent = 'Uploading ';
       const fallback = () => {
         const href = mail(`Free model order from ${new FormData(form).get('name')}`, summary());
         say(`Your email app should open with the order details. Please attach the photos there and press send. If it does not open, email <a href="${href}">${CONFIG.email}</a>.`, 'ok');
         location.href = href;
       };
-      const xhr = new XMLHttpRequest();
-      xhr.open('POST', 'api/order');
-      xhr.upload.onprogress = ev => { if (ev.lengthComputable) btn.firstChild.textContent = `Uploading ${Math.round(ev.loaded / ev.total * 100)}% `; };
-      xhr.onload = () => {
-        let res = {}; try { res = JSON.parse(xhr.responseText); } catch {}
-        if (xhr.status < 300 && res.ok) { form.reset(); files = []; render(); say(`Received. Your order number is <b>${res.id}</b>. We confirm by email within minutes and send a preview within 24 hours.`, 'ok'); }
-        else if (xhr.status >= 400 && xhr.status < 500 && res.message) say(res.message, 'err');
+      try {
+        // each file goes up in 1.5 MB parts, so large phone photos, PDFs and 3D files (up to 100 MB) all work
+        data.upload_ids = await uploadAll(files, p => { btn.firstChild.textContent = `Uploading ${Math.round(p * 100)}% `; });
+        btn.firstChild.textContent = 'Sending ';
+        const r = await fetch('api/order', { method: 'POST', headers: { 'content-type': 'application/json', 'x-cubix': '1' }, body: JSON.stringify(data) });
+        let res = {}; try { res = await r.json(); } catch {}
+        if (r.ok && res.ok) { form.reset(); files = []; render(); say(`Received. Your order number is <b>${res.id}</b>. We confirm by email within minutes and send a preview within 24 hours.`, 'ok'); }
+        else if (r.status >= 400 && r.status < 500 && res.message) say(res.message, 'err');
         else fallback();
-        done();
-      };
-      xhr.onerror = () => { fallback(); done(); };
-      xhr.send(fd);
+      } catch (err) { if (err && err.userMessage) say(err.userMessage, 'err'); else fallback(); }
+      done();
       function done() { btn.disabled = false; btn.firstChild.textContent = 'Send my free order '; }
     });
+    async function uploadAll(list, onProgress) {
+      const total = list.reduce((x, f) => x + f.size, 0) || 1; let sent = 0; const ids = [];
+      const call = async (method, path, body, json) => {
+        for (let attempt = 1; ; attempt++) {
+          let r; try { r = await fetch('api/' + path, { method, headers: { 'x-cubix': '1', 'content-type': json ? 'application/json' : 'application/octet-stream' }, body: json ? JSON.stringify(body) : body }); } catch { r = null; }
+          if (r && r.ok) return r.json();
+          if (r && r.status >= 400 && r.status < 500) { let d = {}; try { d = await r.json(); } catch {} const e = new Error(d.message || 'Upload failed'); e.userMessage = d.message; throw e; }
+          if (attempt >= 3) throw new Error('Upload failed');
+          await new Promise(res => setTimeout(res, 900 * attempt));
+        }
+      };
+      for (const f of list) {
+        const up = await call('POST', 'uploads', { name: f.name, size: f.size, type: f.type || '' }, true);
+        const th = new FormData(); await addThumbs(th, [f]); const t = th.get('thumbs'); if (t) await call('PUT', `uploads/${up.id}/thumb`, t).catch(() => {});
+        let next = 0;
+        const worker = async () => { while (next < up.parts) { const n = next++, part = f.slice(n * up.part_size, Math.min(f.size, (n + 1) * up.part_size)); await call('PUT', `uploads/${up.id}/${n}`, part); sent += part.size; onProgress(Math.min(1, sent / total)); } };
+        await Promise.all([worker(), worker(), worker()]);
+        await call('POST', `uploads/${up.id}/finish`, {}, true);
+        ids.push(up.id);
+      }
+      return ids;
+    }
     // small webp previews uploaded next to each photo, so the team dashboard loads fast
     async function addThumbs(fd, list) {
       for (const f of list) {

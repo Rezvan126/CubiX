@@ -3,7 +3,7 @@ import {
   STATUSES, OPEN_STATUSES, PLANS, TURNAROUND_HOURS, HttpError, json, now, addHours, uid, orderCode,
   hashPassword, verifyPassword, clean, validEmail, validPassword, createSession, clearCookie, getUser,
   destroySession, makeLinkToken, useLinkToken, siteUrl, logEvent, storeFiles,
-  readBody, field, sha256, readFile, thumbMap, removeBlobs,
+  readBody, field, sha256, readFile, thumbMap, removeBlobs, attachUploads, uploadIds, CHUNK, MAX_UPLOAD,
 } from '../_lib/core.js';
 import { later, alertTeam, sendMail, emailHtml, emailReady, notifySettings } from '../_lib/notify.js';
 
@@ -20,7 +20,8 @@ export async function onRequest(context) {
     if (!env.DB) throw new HttpError(500, 'not_configured', 'Database is not configured.');
     const bookmark = request.headers.get('x-d1-bookmark');
     const db = typeof env.DB.withSession === 'function'
-      ? env.DB.withSession(bookmark && bookmark.length < 200 && /^[\w-]+$/.test(bookmark) ? bookmark : 'first-unconstrained') : env.DB;
+      // changes read and write the main copy; plain reads may use the nearest copy, kept in step by the browser's bookmark
+      ? env.DB.withSession(request.method !== 'GET' ? 'first-primary' : bookmark && bookmark.length < 200 && /^[\w-]+$/.test(bookmark) ? bookmark : 'first-unconstrained') : env.DB;
     context.env = env = { ...env, DB: db, __waitUntil: p => context.waitUntil(p) };
     const url = new URL(request.url);
     const path = url.pathname.replace(/^\/api/, '').replace(/\/$/, '') || '/';
@@ -95,6 +96,7 @@ async function releasePreview(env, request, o, userId, at) {
   const c = await one(env, 'SELECT email, name FROM users WHERE id = ?', o.created_by);
   if (c) mailClient(env, siteUrl(request, env), c.email, c.name, `Preview ready for ${o.code}`, { heading: 'Your preview is ready', intro: `Have a look at the preview for <b>${escH(o.title)}</b>. Approve it, or tell us what to change. You can rotate the 3D model and pin exactly what to change.`, lines: [['Order', o.code], ...(version ? [['Version', String(version)]] : [])], button: { label: 'Review the preview', url: portalUrl(siteUrl(request, env), o.id) } });
 }
+const hasFiles = (b, files) => files.some(f => typeof f === 'object' && f && f.size > 0) || uploadIds(b).length > 0;
 const parsePins = raw => {
   let pins = raw; if (typeof pins === 'string') { try { pins = JSON.parse(pins || '[]'); } catch { throw new HttpError(422, 'invalid', 'Pins could not be read.'); } }
   if (!Array.isArray(pins)) return [];
@@ -133,11 +135,17 @@ async function orderBundle(env, id, user) {
       ORDER BY ru.scope DESC, ru.title`).bind(id),
     env.DB.prepare(`SELECT s.id, s.code, s.item_no, s.status, s.assignee_id FROM orders s JOIN orders o ON (o.id = ?1 OR o.code = ?1)
       WHERE o.group_id IS NOT NULL AND s.group_id = o.group_id ORDER BY s.item_no`).bind(id),
+    env.DB.prepare(`SELECT p.id, p.n, p.round, p.part, p.pos, p.body, p.model_file, p.status, p.created_at, p.resolved_at, u.name AS author, u.role AS author_role FROM pins p
+      JOIN orders o ON o.id = p.order_id LEFT JOIN users u ON u.id = p.created_by WHERE o.id = ?1 OR o.code = ?1 ORDER BY p.n`).bind(id),
+    env.DB.prepare(`SELECT r.pin_id, r.body, r.created_at, u.name AS author, u.role AS author_role FROM pin_replies r JOIN pins p ON p.id = r.pin_id
+      JOIN orders o ON o.id = p.order_id LEFT JOIN users u ON u.id = r.user_id WHERE o.id = ?1 OR o.code = ?1 ORDER BY r.created_at`).bind(id),
   ]);
   const o = r[0].results[0];
   if (!o || (!team && o.shop_id !== user.shop_id)) throw new HttpError(404, 'not_found', 'Order not found.');
   const requests = r[5].results.map(x => ({ ...x, pins: JSON.parse(x.pins || '[]') }));
-  const out = { ...o, files: r[1].results, messages: r[2].results, events: r[3].results, invoices: r[4].results, requests, round: (o.revisions || 0) + 1, siblings: r[7].results };
+  const replies = r[9].results;
+  const pins = r[8].results.map(p => ({ ...p, pos: JSON.parse(p.pos), replies: replies.filter(x => x.pin_id === p.id).map(({ pin_id, ...x }) => x) }));
+  const out = { ...o, pins, files: r[1].results, messages: r[2].results, events: r[3].results, invoices: r[4].results, requests, round: (o.revisions || 0) + 1, siblings: r[7].results };
   if (team) out.rules = r[6].results;
   else {
     for (const k of ['assignee_id', 'assignee_name', 'handin_at', 'wait_from', 'team_seen_at', 'paused_at']) delete out[k];
@@ -160,7 +168,7 @@ function parseDay(v) {
   return d.toISOString();
 }
 
-async function createOrder(env, { shop, userId, body, files, site, orderer }) {
+async function createOrder(env, { shop, userId, body, files, site, orderer, ownerId = null }) {
   const at = now();
   const product = clean(field(body, 'product'), 80) || 'Custom model';
   const baseTitle = clean(field(body, 'title'), 120) || product;
@@ -176,10 +184,10 @@ async function createOrder(env, { shop, userId, body, files, site, orderer }) {
   for (let attempt = 0; ; attempt++) {
     try {
       await env.DB.batch([
-        ...items.map((it, i) => env.DB.prepare(`INSERT INTO orders (id, code, shop_id, created_by, title, product, size, printer, formats, notes, channel, status, priority, is_free, due_at, handin_at, ship_by, group_id, item_no, item_count, created_at, updated_at, source)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(it.id, codes[i], shop.id, userId, count > 1 ? `${baseTitle} (${it.no} of ${count})` : baseTitle, product,
+        ...items.map((it, i) => env.DB.prepare(`INSERT INTO orders (id, code, shop_id, created_by, title, product, size, printer, formats, notes, channel, status, priority, is_free, due_at, handin_at, ship_by, group_id, item_no, item_count, created_at, updated_at, source, customer_notes)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(it.id, codes[i], shop.id, userId, count > 1 ? `${baseTitle} (${it.no} of ${count})` : baseTitle, product,
           clean(field(body, 'size'), 120), clean(field(body, 'printer'), 120), formats, clean(field(body, 'notes'), 4000), clean(field(body, 'channel'), 40) || 'Direct',
-          priority, it.free, due, handin, shipBy, groupId, count > 1 ? it.no : null, count > 1 ? count : null, at, at, source)),
+          priority, it.free, due, handin, shipBy, groupId, count > 1 ? it.no : null, count > 1 ? count : null, at, at, source, clean(field(body, 'customer_notes'), 4000) || null)),
         env.DB.prepare('UPDATE shops SET free_used = 1 WHERE id = ?').bind(shop.id),
         ...items.map(it => env.DB.prepare('INSERT INTO events (order_id, user_id, type, detail, created_at) VALUES (?, ?, ?, ?, ?)').bind(it.id, userId, 'created', it.free ? 'Free first model' : (count > 1 ? `Model ${it.no} of ${count}` : null), at)),
       ]);
@@ -188,7 +196,8 @@ async function createOrder(env, { shop, userId, body, files, site, orderer }) {
   }
   const ids = items.map(it => it.id);
   try {
-    await storeFiles(env, ids[0], files, 'reference', userId, thumbMap(body));
+    if (uploadIds(body).length) await attachUploads(env, ids[0], uploadIds(body), 'reference', userId, ownerId);
+    else await storeFiles(env, ids[0], files, 'reference', userId, thumbMap(body));
     // the same photos belong to every model of the order: share the stored contents instead of copying them
     if (ids.length > 1) await env.DB.batch(ids.slice(1).map(oid => env.DB.prepare(`INSERT INTO files (id, order_id, kind, version, r2_key, name, size, type, uploaded_by, created_at, thumb, released)
       SELECT 'f_' || lower(hex(randomblob(12))), ?, kind, version, r2_key, name, size, type, uploaded_by, created_at, thumb, released FROM files WHERE order_id = ?`).bind(oid, ids[0])));
@@ -314,18 +323,18 @@ on('POST', '/auth/bootstrap', PUBLIC, async ({ request, env }) => {
 on('POST', '/order', PUBLIC, async ({ request, env }) => {
   await rateLimit(env, request, 'order', env.ORDER_LIMIT ? Number(env.ORDER_LIMIT) : 15, 60);
   const b = await readBody(request);
-  if (!(b instanceof FormData)) throw new HttpError(400, 'bad_form');
-  if (b.get('company_website')) return json({ ok: true, id: 'CX000000' }); // spam trap
-  const name = clean(b.get('name'), 120), email = clean(b.get('email'), 200).toLowerCase();
+  const g = k => field(b, k);
+  if (g('company_website')) return json({ ok: true, id: 'CX000000' }); // spam trap
+  const name = clean(g('name'), 120), email = clean(g('email'), 200).toLowerCase();
   if (!name || !validEmail(email)) throw new HttpError(422, 'invalid', 'Add your name and a valid email address.');
-  const files = b.getAll('files');
-  if (!files.some(f => typeof f === 'object' && f.size > 0)) throw new HttpError(422, 'no_files', 'Add at least one photo or file.');
+  const files = b instanceof FormData ? b.getAll('files') : [];
+  if (!hasFiles(b, files)) throw new HttpError(422, 'no_files', 'Add at least one photo or file.');
   let u = await one(env, 'SELECT * FROM users WHERE email = ?', email);
   if (u && u.role !== 'client') throw new HttpError(422, 'invalid', 'Use a shop email address for orders.');
   let shop;
   if (u) shop = await one(env, 'SELECT * FROM shops WHERE id = ?', u.shop_id);
   else {
-    shop = { id: uid('s_'), name: clean(b.get('shop'), 120) || name, url: clean(b.get('shop'), 300), free_used: 0 };
+    shop = { id: uid('s_'), name: clean(g('shop'), 120) || name, url: clean(g('shop'), 300), free_used: 0 };
     u = { id: uid('u_') };
     await env.DB.batch([
       env.DB.prepare('INSERT INTO shops (id, name, url, created_at) VALUES (?, ?, ?, ?)').bind(shop.id, shop.name, shop.url, now()),
@@ -347,11 +356,10 @@ on('GET', '/client/orders', CLIENT, async ({ env, user }) => {
 });
 on('POST', '/client/orders', CLIENT, async ({ request, env, user }) => {
   const b = await readBody(request);
-  if (!(b instanceof FormData)) throw new HttpError(400, 'bad_form');
-  const files = b.getAll('files');
-  if (!files.some(f => typeof f === 'object' && f.size > 0)) throw new HttpError(422, 'no_files', 'Add at least one photo or file.');
+  const files = b instanceof FormData ? b.getAll('files') : [];
+  if (!hasFiles(b, files)) throw new HttpError(422, 'no_files', 'Add at least one photo or file.');
   const shop = await one(env, 'SELECT * FROM shops WHERE id = ?', user.shop_id);
-  const r = await createOrder(env, { shop, userId: user.id, body: b, files, site: siteUrl(request, env), orderer: { id: user.id, email: user.email, name: user.name } });
+  const r = await createOrder(env, { shop, userId: user.id, body: b, files, site: siteUrl(request, env), orderer: { id: user.id, email: user.email, name: user.name }, ownerId: user.id });
   return json({ ok: true, ...r }, 201);
 });
 on('GET', '/client/orders/:id', CLIENT, async ({ env, params, user }) => json({ ok: true, order: await orderBundle(env, params.id, user) }));
@@ -369,11 +377,10 @@ on('POST', '/client/orders/:id/messages', CLIENT, async ({ request, env, params,
 });
 on('POST', '/client/orders/:id/files', CLIENT, async ({ request, env, params, user }) => {
   const o = await loadOrder(env, params.id, user); const b = await readBody(request);
-  if (!(b instanceof FormData)) throw new HttpError(400, 'bad_form');
   if (['paid', 'cancelled'].includes(o.status)) throw new HttpError(409, 'bad_state', 'This order is closed. Start a new order for new work.');
-  const files = b.getAll('files');
-  if (!files.some(f => typeof f === 'object' && f.size > 0)) throw new HttpError(422, 'no_files', 'Choose at least one file.');
-  const r = await storeFiles(env, o.id, files, 'reference', user.id, thumbMap(b));
+  const files = b instanceof FormData ? b.getAll('files') : [];
+  if (!hasFiles(b, files)) throw new HttpError(422, 'no_files', 'Choose at least one file.');
+  const r = uploadIds(b).length ? await attachUploads(env, o.id, uploadIds(b), 'reference', user.id, user.id) : await storeFiles(env, o.id, files, 'reference', user.id, thumbMap(b));
   const at = now();
   await env.DB.batch([
     env.DB.prepare('UPDATE orders SET updated_at = ?, client_msg_at = ? WHERE id = ?').bind(at, at, o.id),
@@ -397,12 +404,16 @@ on('POST', '/client/orders/:id/approve', CLIENT, async ({ request, env, params, 
 on('POST', '/client/orders/:id/revision', CLIENT, async ({ request, env, params, user }) => {
   const o = await loadOrder(env, params.id, user); const b = await readBody(request);
   if (!['preview', 'delivered', 'approved'].includes(o.status)) throw new HttpError(409, 'bad_state', 'Revisions can be asked once a preview is ready.');
-  const body = clean(field(b, 'body'), 4000); if (!body) throw new HttpError(422, 'invalid', 'Tell us what to change.');
+  const openPins = await one(env, "SELECT COUNT(*) AS n FROM pins WHERE order_id = ? AND status = 'open'", o.id);
+  let body = clean(field(b, 'body'), 4000);
+  if (!body && openPins.n) body = `Please see the ${openPins.n} open comment${openPins.n > 1 ? 's' : ''} on the model.`;
+  if (!body) throw new HttpError(422, 'invalid', 'Tell us what to change, or comment on the model.');
   const pins = parsePins(field(b, 'pins'));
   const modelFile = clean(field(b, 'model_file'), 40) || null;
   const at = now(), round = (o.revisions || 0) + 2, rid = uid('r_');
   const due = addHours(at, 24);
-  if (b instanceof FormData) {
+  if (uploadIds(b).length) await attachUploads(env, o.id, uploadIds(b), 'reference', user.id, user.id, { requestId: rid });
+  else if (b instanceof FormData) {
     const photos = b.getAll('files');
     if (photos.some(f => typeof f === 'object' && f.size > 0)) await storeFiles(env, o.id, photos, 'reference', user.id, thumbMap(b), { requestId: rid });
   }
@@ -419,6 +430,110 @@ on('POST', '/client/orders/:id/seen', CLIENT, async ({ env, params, user }) => {
   const o = await loadOrder(env, params.id, user);
   if (o.status === 'preview' && !o.preview_seen_at) await env.DB.prepare('UPDATE orders SET preview_seen_at = ? WHERE id = ?').bind(now(), o.id).run();
   return json({ ok: true });
+});
+
+// ---------------------------------------------------------------- chunked uploads (files up to 100 MB on the free plan)
+// 1. POST /uploads {name, size, type}  2. PUT /uploads/:id/:n with each 1.5 MB part  3. optional PUT /uploads/:id/thumb
+// 4. POST /uploads/:id/finish  5. send upload_ids with the order, message or hand in.
+on('POST', '/uploads', PUBLIC, async ({ request, env }) => {
+  const user = await getUser(request, env);
+  if (!user) await rateLimit(env, request, 'upload', 120, 60);
+  const b = await readBody(request);
+  const name = clean(field(b, 'name'), 200) || 'file', size = Number(field(b, 'size')), type = clean(field(b, 'type'), 100) || null;
+  if (!(size > 0)) throw new HttpError(422, 'invalid', `${name} is empty.`);
+  if (size > MAX_UPLOAD) throw new HttpError(413, 'file_too_large', `${name} is over 100 MB. Please share a download link in the notes instead.`);
+  const id = 'up_' + uid('').slice(0, 24), parts = Math.ceil(size / CHUNK), at = now();
+  // housekeeping: forget uploads that were never used within a day
+  const stale = (await env.DB.prepare("SELECT id FROM uploads WHERE status <> 'attached' AND created_at < ? LIMIT 20").bind(addHours(at, -24)).all()).results;
+  await env.DB.batch([
+    env.DB.prepare('INSERT INTO uploads (id, owner_id, name, size, type, parts, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(id, user ? user.id : null, name, size, type, parts, 'open', at),
+    ...stale.flatMap(x => [env.DB.prepare('DELETE FROM file_chunks WHERE file_id = ?').bind(x.id), env.DB.prepare('DELETE FROM uploads WHERE id = ?').bind(x.id)]),
+  ]);
+  return json({ ok: true, id, part_size: CHUNK, parts }, 201);
+});
+async function loadUpload(env, request, id) {
+  if (!/^up_[a-f0-9]{24}$/.test(id)) throw new HttpError(404, 'not_found');
+  const u = await one(env, 'SELECT id, owner_id, size, parts, status FROM uploads WHERE id = ?', id);
+  if (!u) throw new HttpError(404, 'not_found', 'This upload expired. Please add the file again.');
+  if (u.owner_id) { const me = await getUser(request, env); if (!me || me.id !== u.owner_id) throw new HttpError(403, 'forbidden'); }
+  if (u.status !== 'open') throw new HttpError(409, 'bad_state', 'This upload is already finished.');
+  return u;
+}
+on('PUT', '/uploads/:id/thumb', PUBLIC, async ({ request, env, params }) => {
+  const u = await loadUpload(env, request, params.id);
+  const buf = new Uint8Array(await request.arrayBuffer());
+  if (!buf.length || buf.length > 300 * 1024) throw new HttpError(413, 'too_large', 'Preview too large.');
+  await env.DB.prepare('UPDATE uploads SET thumb = ? WHERE id = ?').bind(buf, u.id).run();
+  return json({ ok: true });
+});
+on('PUT', '/uploads/:id/:n', PUBLIC, async ({ request, env, params }) => {
+  const u = await loadUpload(env, request, params.id);
+  const n = Number(params.n);
+  if (!Number.isInteger(n) || n < 0 || n >= u.parts) throw new HttpError(422, 'invalid', 'Bad part number.');
+  const expect = n === u.parts - 1 ? u.size - CHUNK * (u.parts - 1) : CHUNK;
+  const buf = new Uint8Array(await request.arrayBuffer());
+  if (buf.length !== expect) throw new HttpError(422, 'invalid', `Part ${n + 1} arrived incomplete. Please try again.`);
+  await env.DB.prepare('INSERT OR REPLACE INTO file_chunks (file_id, idx, data) VALUES (?, ?, ?)').bind(u.id, n, buf).run();
+  return json({ ok: true });
+});
+on('POST', '/uploads/:id/finish', PUBLIC, async ({ request, env, params }) => {
+  const u = await loadUpload(env, request, params.id);
+  const c = await one(env, 'SELECT COUNT(*) AS n, COALESCE(SUM(length(data)), 0) AS bytes FROM file_chunks WHERE file_id = ?', u.id);
+  if (c.n !== u.parts || c.bytes !== u.size) throw new HttpError(422, 'incomplete', `The upload is incomplete (${c.n} of ${u.parts} parts). Please try again.`);
+  await env.DB.prepare("UPDATE uploads SET status = 'done' WHERE id = ?").bind(u.id).run();
+  return json({ ok: true, id: u.id });
+});
+
+// ---------------------------------------------------------------- comments pinned on the 3D model
+async function loadPin(env, id, user) {
+  const pin = await one(env, 'SELECT p.*, o.shop_id, o.code, o.created_by AS order_owner, o.status AS order_status FROM pins p JOIN orders o ON o.id = p.order_id WHERE p.id = ?', id);
+  if (!pin || (!isTeam(user) && pin.shop_id !== user.shop_id)) throw new HttpError(404, 'not_found', 'Comment not found.');
+  return pin;
+}
+async function addPin(env, request, o, user) {
+  const b = await readBody(request);
+  const body = clean(field(b, 'body'), 2000); if (!body) throw new HttpError(422, 'invalid', 'Write the comment first.');
+  let pos = field(b, 'pos'); if (typeof pos === 'string') { try { pos = JSON.parse(pos); } catch { pos = null; } }
+  if (!Array.isArray(pos) || pos.length !== 3 || pos.some(v => !isFinite(Number(v)))) throw new HttpError(422, 'invalid', 'Click a spot on the model first.');
+  const at = now(), id = uid('p_');
+  const nrow = await one(env, 'SELECT COALESCE(MAX(n), 0) + 1 AS n FROM pins WHERE order_id = ?', o.id);
+  await env.DB.batch([
+    env.DB.prepare('INSERT INTO pins (id, order_id, n, round, part, pos, body, model_file, status, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .bind(id, o.id, nrow.n, (o.revisions || 0) + 1, clean(field(b, 'part'), 120) || null, JSON.stringify(pos.map(v => Math.round(Number(v) * 1000) / 1000)), body, clean(field(b, 'model_file'), 40) || null, 'open', user.id, at),
+    isTeam(user) ? env.DB.prepare('UPDATE orders SET updated_at = ? WHERE id = ?').bind(at, o.id) : env.DB.prepare('UPDATE orders SET updated_at = ?, client_msg_at = ? WHERE id = ?').bind(at, at, o.id),
+  ]);
+  return { id, n: nrow.n };
+}
+on('POST', '/client/orders/:id/pins', CLIENT, async ({ request, env, params, user }) => {
+  const o = await loadOrder(env, params.id, user);
+  if (!['preview', 'delivered', 'approved', 'revisions'].includes(o.status)) throw new HttpError(409, 'bad_state', 'Comments open once a preview is ready.');
+  const r = await addPin(env, request, o, user);
+  later(env, alertTeam(env, siteUrl(request, env), { title: `New comment ${r.n} on ${o.code}`, text: `${o.shop_name} commented on the model.`, url: teamUrl(siteUrl(request, env), o.id) }));
+  return json({ ok: true, ...r }, 201);
+});
+on('POST', '/team/orders/:id/pins', TEAM, async ({ request, env, params, user }) => {
+  const o = await loadOrder(env, params.id, user);
+  return json({ ok: true, ...(await addPin(env, request, o, user)) }, 201);
+});
+on('POST', '/pins/:id/replies', ANY, async ({ request, env, params, user }) => {
+  const pin = await loadPin(env, params.id, user); const b = await readBody(request);
+  const body = clean(field(b, 'body'), 2000); if (!body) throw new HttpError(422, 'invalid', 'Write a reply first.');
+  const at = now();
+  await env.DB.batch([
+    env.DB.prepare('INSERT INTO pin_replies (id, pin_id, user_id, body, created_at) VALUES (?, ?, ?, ?, ?)').bind(uid('pr_'), pin.id, user.id, body, at),
+    isTeam(user) ? env.DB.prepare('UPDATE orders SET updated_at = ? WHERE id = ?').bind(at, pin.order_id) : env.DB.prepare('UPDATE orders SET updated_at = ?, client_msg_at = ? WHERE id = ?').bind(at, at, pin.order_id),
+  ]);
+  const site = siteUrl(request, env);
+  if (isTeam(user)) { const c = await one(env, 'SELECT email, name FROM users WHERE id = ?', pin.order_owner); if (c) mailClient(env, site, c.email, c.name, `Reply on comment ${pin.n}, order ${pin.code}`, { heading: `Reply on comment ${pin.n}`, intro: `<i>${escH(pin.body)}</i><br><br>${escH(body).replace(/\n/g, '<br>')}`, button: { label: 'Open the model', url: portalUrl(site, pin.order_id) } }); }
+  else later(env, alertTeam(env, site, { title: `Reply on comment ${pin.n}, ${pin.code}`, text: body.slice(0, 400), url: teamUrl(site, pin.order_id) }));
+  return json({ ok: true }, 201);
+});
+on('POST', '/pins/:id/resolve', ANY, async ({ request, env, params, user }) => {
+  const pin = await loadPin(env, params.id, user); const b = await readBody(request);
+  const resolved = field(b, 'resolved') !== false && field(b, 'resolved') !== 'false';
+  if (resolved && !isTeam(user)) throw new HttpError(403, 'forbidden', 'The team marks comments as done. You can reopen one if it is not fixed.');
+  await env.DB.prepare('UPDATE pins SET status = ?, resolved_by = ?, resolved_at = ? WHERE id = ?').bind(resolved ? 'resolved' : 'open', resolved ? user.id : null, resolved ? now() : null, pin.id).run();
+  return json({ ok: true, status: resolved ? 'resolved' : 'open' });
 });
 
 // ---------------------------------------------------------------- files (shared, access checked)
@@ -701,6 +816,8 @@ on('POST', '/team/orders/:id/delete', ADMIN, async ({ env, params, user }) => {
   await env.DB.batch([
     env.DB.prepare('DELETE FROM invoices WHERE order_id = ?').bind(o.id),
     env.DB.prepare('DELETE FROM requests WHERE order_id = ?').bind(o.id),
+    env.DB.prepare('DELETE FROM pin_replies WHERE pin_id IN (SELECT id FROM pins WHERE order_id = ?)').bind(o.id),
+    env.DB.prepare('DELETE FROM pins WHERE order_id = ?').bind(o.id),
     env.DB.prepare('DELETE FROM files WHERE order_id = ?').bind(o.id),
     env.DB.prepare('DELETE FROM messages WHERE order_id = ?').bind(o.id),
     env.DB.prepare('DELETE FROM events WHERE order_id = ?').bind(o.id),
@@ -725,14 +842,14 @@ on('POST', '/team/orders/:id/messages', TEAM, async ({ request, env, params, use
 
 on('POST', '/team/orders/:id/files', TEAM, async ({ request, env, params, user }) => {
   const o = await loadOrder(env, params.id, user); const b = await readBody(request);
-  if (!(b instanceof FormData)) throw new HttpError(400, 'bad_form');
-  const kind = b.get('kind');
+  const kind = field(b, 'kind');
   if (!['preview', 'final', 'reference'].includes(kind)) throw new HttpError(422, 'invalid', 'Pick preview or final files.');
-  const files = b.getAll('files');
-  if (!files.some(f => typeof f === 'object' && f.size > 0)) throw new HttpError(422, 'no_files', 'Choose at least one file.');
+  const files = b instanceof FormData ? b.getAll('files') : [];
+  if (!hasFiles(b, files)) throw new HttpError(422, 'no_files', 'Choose at least one file.');
   const st = await getSettings(env);
-  const qc = kind === 'preview' && st.qc_enabled !== '0' && user.role !== 'admin'; // admins are the QC, their previews go straight out
-  const r = await storeFiles(env, o.id, files, kind, user.id, thumbMap(b), { released: !qc });
+  const qc = kind === 'preview' && st.qc_enabled === '1' && user.role !== 'admin'; // admins are the QC, their previews go straight out
+  const r = uploadIds(b).length ? await attachUploads(env, o.id, uploadIds(b), kind, user.id, user.id, { released: !qc })
+    : await storeFiles(env, o.id, files, kind, user.id, thumbMap(b), { released: !qc });
   const at = now(); let status = o.status;
   if (kind === 'preview' && ['new', 'confirmed', 'modeling', 'revisions', 'waiting', 'review', 'preview'].includes(o.status)) status = qc ? 'review' : 'preview';
   if (kind === 'final' && o.status !== 'cancelled') status = o.paid ? 'paid' : 'delivered';
@@ -857,7 +974,7 @@ const SETTING_DEFAULTS = {
   alert_email: '',
   mail_from: '',
   paypal_me: '',
-  qc_enabled: '1',
+  qc_enabled: '0',
 };
 const STORAGE_LIMIT = 5 * 1024 * 1024 * 1024; // D1 free plan
 async function getSettings(env) {
@@ -1041,7 +1158,7 @@ on('GET', '/backup', PUBLIC, async ({ request, env }) => {
     if (!u) throw new HttpError(401, 'unauthorized', 'Please sign in.');
     if (u.role !== 'admin') throw new HttpError(403, 'forbidden');
   }
-  const tables = ['shops', 'users', 'orders', 'files', 'messages', 'events', 'invoices', 'settings', 'requests', 'rules'];
+  const tables = ['shops', 'users', 'orders', 'files', 'messages', 'events', 'invoices', 'settings', 'requests', 'rules', 'pins', 'pin_replies'];
   const cols = { files: 'id, order_id, kind, version, r2_key, name, size, type, uploaded_by, created_at, released, request_id' };
   const r = await env.DB.batch(tables.map(t => env.DB.prepare(`SELECT ${cols[t] || '*'} FROM ${t}`)));
   const data = Object.fromEntries(tables.map((t, i) => [t, r[i].results]));

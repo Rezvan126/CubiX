@@ -91,6 +91,18 @@ Everything below is under **Settings** in the dashboard (admins only).
 
 Migrations to run on the live database: `migrations/0002_invoices_thumbs_settings.sql`, `migrations/0003_sources_paylinks.sql`.
 
+### The seller review flow (current focus)
+1. **Request:** the seller sends what to model, any files (phone photos including iPhone HEIC, screenshots, PDFs, sketches, 3D files), their own notes, their Etsy customer's notes, and an optional print size.
+2. **Files up to 100 MB:** every upload goes in 1.5 MB parts (`/api/uploads`). The free plan stops a single request at about 10 MB, so large files would fail otherwise.
+3. **Hand-in:** the modeler uploads the model. A building can be several part files (ground floor, upper floor, roof) handed in together as one round. QC is off by default; switch it on in Settings if an admin should check first.
+4. **Review:**
+   - The seller turns and zooms the model, hides parts, and cuts through it with the height slider to check each floor.
+   - Clicking any spot leaves a numbered comment.
+   - Your team replies on each comment and marks it resolved; the seller can reopen it.
+5. **Next round:** the seller clicks **Send changes**. The open comments, an optional note and photos start the next round. When happy, the seller clicks **Approve**.
+
+Run `migrations/0005_uploads_pins_notes.sql` on the live database before deploying this version.
+
 ### Production control, revisions and rules
 - **Job Bank:** modelers press **Take next job** on the overview or the board. They get the most urgent unassigned order (rush first, then the earliest hand-in time). It stops at their capacity ("You hold 3 of 4"). Admins can still assign by hand.
 - **Hand-in time:** every job has a team deadline 6 hours before the client's due time (or a quarter of a short window), which leaves room for QC. A live countdown shows on cards and in the order panel.
@@ -137,7 +149,7 @@ This starts a fresh local database and the server on http://localhost:8788. Firs
 ```bash
 npm run test:api
 ```
-That runs 238 checks on accounts, permissions, the order lifecycle, files, payments and capacity. For the full browser test (155 checks, desktop and phone, screenshots in `tests/shots/`), first run `./tests/fresh.sh` again, then:
+That runs 264 checks on accounts, permissions, the order lifecycle, files, payments and capacity. For the full browser test (161 checks, desktop and phone, screenshots in `tests/shots/`), first run `./tests/fresh.sh` again, then:
 
 ```bash
 npm run test:e2e

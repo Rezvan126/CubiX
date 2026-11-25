@@ -179,7 +179,8 @@ export async function readBody(request) {
 export const field = (body, k) => (body instanceof FormData ? body.get(k) : body?.[k]);
 
 // ---------- file contents: R2 when bound, otherwise chunked into D1 (free plan) ----------
-const CHUNK = 1500 * 1024;
+export const CHUNK = 1500 * 1024;
+export const MAX_UPLOAD = 100 * 1024 * 1024; // per file, sent in CHUNK sized parts
 async function chunkStatements(env, fileId, f) {
   const buf = new Uint8Array(await f.arrayBuffer()), out = [];
   for (let i = 0, n = 0; i < buf.length; i += CHUNK, n++) {
@@ -208,4 +209,38 @@ export async function readFile(env, key) {
       ctrl.enqueue(new Uint8Array(row.data));
     },
   });
+}
+
+// ---------- chunked uploads: attach finished uploads to an order as files ----------
+// ids: upload ids sent by the browser after it finished uploading every part.
+// ownerId: the signed in user (or null for the public website form, which only accepts anonymous uploads).
+export async function attachUploads(env, orderId, ids, kind, userId, ownerId, opts = {}) {
+  const list = [...new Set((Array.isArray(ids) ? ids : String(ids || '').split(',')).map(x => String(x).trim()).filter(x => /^up_[a-f0-9]{24}$/.test(x)))];
+  if (!list.length) return { files: [], version: 0 };
+  if (list.length > MAX_FILES) throw new HttpError(413, 'too_many_files', `Up to ${MAX_FILES} files per upload.`);
+  const ph = list.map(() => '?').join(',');
+  const ups = (await env.DB.prepare(`SELECT id, owner_id, name, size, type, status, thumb FROM uploads WHERE id IN (${ph})`).bind(...list).all()).results;
+  if (ups.length !== list.length) throw new HttpError(422, 'invalid', 'A file did not finish uploading. Please add it again.');
+  for (const u of ups) {
+    if (u.status !== 'done') throw new HttpError(422, 'invalid', `${u.name} did not finish uploading. Please add it again.`);
+    if ((u.owner_id || null) !== (ownerId || null)) throw new HttpError(403, 'forbidden', 'That upload belongs to someone else.');
+  }
+  let version = 1;
+  if (kind !== 'reference') {
+    const row = await env.DB.prepare('SELECT COALESCE(MAX(version), 0) AS v FROM files WHERE order_id = ? AND kind = ?').bind(orderId, kind).first();
+    version = (row.v || 0) + 1;
+  }
+  const at = now(), order = new Map(list.map((id, i) => [id, i]));
+  ups.sort((a, b) => order.get(a.id) - order.get(b.id));
+  await env.DB.batch([
+    ...ups.map(u => env.DB.prepare('INSERT INTO files (id, order_id, kind, version, r2_key, name, size, type, uploaded_by, created_at, thumb, released, request_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .bind(u.id, orderId, kind, version, 'd1:' + u.id, u.name, u.size, u.type || null, userId, at, u.thumb, opts.released === false ? 0 : 1, opts.requestId || null)),
+    env.DB.prepare(`UPDATE uploads SET status = 'attached' WHERE id IN (${ph})`).bind(...list),
+  ]);
+  return { files: ups.map(u => ({ id: u.id, name: u.name, size: u.size })), version };
+}
+// The ids a request carries, from JSON or a form field.
+export function uploadIds(body) {
+  if (body instanceof FormData) return body.getAll('upload_ids').flatMap(v => String(v).split(',')).filter(Boolean);
+  const v = body && body.upload_ids; return Array.isArray(v) ? v : v ? String(v).split(',') : [];
 }

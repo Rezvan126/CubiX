@@ -27,6 +27,18 @@ class Client {
   get(p) { return this.req('GET', p); }
   post(p, b, o) { return this.req('POST', p, b, o); }
   patch(p, b) { return this.req('PATCH', p, b); }
+  put(p, b) { return this.req('PUT', p, b, { form: true }); }
+  // chunked upload exactly like the browser: start, parts, finish
+  async upload(name, bytes, type = 'application/octet-stream') {
+    const s = await this.post('/uploads', { name, size: bytes.length, type });
+    if (s.status !== 201) return s;
+    for (let n = 0; n < s.data.parts; n++) {
+      const r = await this.put(`/uploads/${s.data.id}/${n}`, new Blob([bytes.subarray(n * s.data.part_size, Math.min(bytes.length, (n + 1) * s.data.part_size))]));
+      if (r.status !== 200) return r;
+    }
+    const f = await this.post(`/uploads/${s.data.id}/finish`);
+    return f.status === 200 ? { status: 200, id: s.data.id, parts: s.data.parts } : f;
+  }
 }
 const png = () => new Blob([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3, 4])], { type: 'image/png' });
 function orderForm(fields, files = [['house.png', png()]]) {
@@ -255,6 +267,9 @@ async function run() {
   check('team sees internal note and events', r.data.order.messages.some(m => m.internal === 1) && r.data.order.events.some(e => e.type === 'assigned'), r.data.order.messages.length);
 
   // preview
+  r = await admin.get('/team/settings');
+  check('QC is off by default', r.data.settings.qc_enabled === '0', r.data.settings.qc_enabled);
+  await admin.patch('/team/settings', { qc_enabled: '1' });
   let f = new FormData(); f.append('kind', 'preview'); f.append('files', png(), 'render1.png');
   r = await modeler.post(`/team/orders/${bOrder}/files`, f, { form: true });
   check('modeler preview goes to QC review first, version 1', r.status === 201 && r.data.status === 'review' && r.data.version === 1, r.data);
@@ -499,6 +514,79 @@ async function run() {
   check('admin updates a rule', r.status === 200 && (await modeler.get('/team/rules')).data.rules[0].body === 'Hollow, 2.4 mm walls.', r.data);
   await admin.post(`/team/rules/${ruleId}/delete`);
   check('admin deletes a rule', (await modeler.get('/team/rules')).data.rules.length === 0);
+
+  // ---------------- chunked uploads, Etsy notes, comments on the model
+  {
+    const { randomBytes, createHash } = await import('crypto');
+    const h = b => createHash('sha256').update(Buffer.from(b)).digest('hex');
+    const big = new Uint8Array(randomBytes(4 * 1024 * 1024 + 777));
+    let u = await shopA.upload('house-front.jpg', big, 'image/jpeg');
+    check('a 4 MB file uploads in 3 parts of 1.5 MB', u.status === 200 && u.parts === 3, u);
+    r = await shopA.post('/client/orders', { title: 'Corner cottage', notes: 'Front is the side with the red door', customer_notes: 'Buyer: please add our cat on the porch', size: '12 cm', upload_ids: [u.id] });
+    check('portal request with uploaded files, notes and the Etsy customer notes', r.status === 201, r.data);
+    const cottage = r.data.id;
+    r = await shopA.get('/client/orders/' + cottage);
+    const cf = r.data.order.files[0];
+    check('the request keeps the seller and Etsy customer notes apart', r.data.order.notes === 'Front is the side with the red door' && r.data.order.customer_notes === 'Buyer: please add our cat on the porch', r.data.order);
+    r = await shopA.get('/files/' + cf.id);
+    check('the uploaded file comes back byte for byte', r.status === 200 && h(r.data) === h(big) && cf.size === big.length, r.status);
+    r = await shopA.post('/client/orders', { title: 'Reuse', upload_ids: [u.id] });
+    check('an upload cannot be attached twice', r.status === 422, r.data);
+    let s = await shopA.post('/uploads', { name: 'x.stl', size: 3000000 });
+    r = await shopA.put(`/uploads/${s.data.id}/0`, new Blob([new Uint8Array(10)]));
+    check('a part with the wrong size is refused', r.status === 422, r.data);
+    r = await shopA.post(`/uploads/${s.data.id}/finish`);
+    check('an unfinished upload cannot be completed', r.status === 422 && r.data.error === 'incomplete', r.data);
+    r = await shopB.put(`/uploads/${s.data.id}/0`, new Blob([new Uint8Array(1536000)]));
+    check("nobody else can add parts to someone's upload", r.status === 401 || r.status === 403, r.status);
+    r = await shopA.post('/uploads', { name: 'huge.stl', size: 101 * 1024 * 1024 });
+    check('files over 100 MB are refused before uploading', r.status === 413, r.data);
+    const other = await shopB.upload('b.png', new Uint8Array(100));
+    r = await shopA.post('/client/orders', { title: 'Steal', upload_ids: [other.id || 'up_000000000000000000000000'] });
+    check("a shop cannot attach another user's upload", r.status === 403 || r.status === 422, r.data);
+    // public website form: anonymous upload, then the order
+    const pub = new Client();
+    u = await pub.upload('street-view.pdf', new Uint8Array(2000000), 'application/pdf');
+    r = await pub.post('/order', { name: 'Pia', email: em('pia'), shop: 'Pia Prints', product: 'House replica', notes: 'PDF of the plans', upload_ids: [u.id] });
+    check('website order with a chunked PDF upload', r.status === 201 && /^CX/.test(r.data.id), r.data);
+    // team hands in two part files as one round, straight to the seller (admin skips QC)
+    const g = await admin.upload('ground-floor.stl', new Uint8Array(4000), 'model/stl'), roof = await admin.upload('roof.stl', new Uint8Array(3000), 'model/stl');
+    r = await admin.post(`/team/orders/${cottage}/files`, { kind: 'preview', upload_ids: [g.id, roof.id] });
+    check('team hands in a model made of two part files as one version', r.status === 201 && r.data.version === 1 && r.data.status === 'preview', r.data);
+    r = await shopA.get('/client/orders/' + cottage);
+    check('the seller sees both parts', r.data.order.files.filter(x => x.kind === 'preview').map(x => x.name).join() === 'ground-floor.stl,roof.stl', r.data.order.files.map(x => x.name));
+    // threaded comments on the model
+    r = await shopA.post(`/client/orders/${cottage}/pins`, { body: 'Roof should be steeper', pos: [1, 2, 3], part: 'roof.stl', model_file: roof.id });
+    check('seller comments on a spot of the roof', r.status === 201 && r.data.n === 1, r.data);
+    const p1 = r.data.id;
+    r = await shopA.post(`/client/orders/${cottage}/pins`, { body: 'x', pos: 'nowhere' });
+    check('a comment needs a spot on the model', r.status === 422, r.data);
+    r = await shopA.post(`/client/orders/${cottage}/pins`, { body: 'Window on the left is missing', pos: [0.5, 0, 1], part: 'ground-floor.stl' });
+    const p2 = r.data.id;
+    r = await shopB.post(`/client/orders/${cottage}/pins`, { body: 'hack', pos: [0, 0, 0] });
+    check('other shops cannot comment', r.status === 404, r.status);
+    r = await modeler.post(`/pins/${p1}/replies`, { body: 'Will do, 40 degrees ok?' });
+    check('team replies on the comment', r.status === 201, r.data);
+    r = await shopA.post(`/pins/${p1}/replies`, { body: 'Yes, 40 is perfect' });
+    r = await shopA.post(`/pins/${p1}/resolve`, { resolved: true });
+    check('only the team marks a comment resolved', r.status === 403, r.status);
+    r = await modeler.post(`/pins/${p1}/resolve`, { resolved: true });
+    check('team resolves the comment', r.status === 200 && r.data.status === 'resolved', r.data);
+    r = await shopA.post(`/pins/${p1}/resolve`, { resolved: false });
+    check('the seller can reopen it', r.status === 200 && r.data.status === 'open', r.data);
+    await modeler.post(`/pins/${p1}/resolve`, { resolved: true });
+    r = await modeler.post(`/team/orders/${cottage}/pins`, { body: 'Is the chimney brick or stone?', pos: [2, 2, 2], part: 'roof.stl' });
+    check('team can ask on a spot too', r.status === 201 && r.data.n === 3, r.data);
+    r = await shopA.get('/client/orders/' + cottage);
+    const pins = r.data.order.pins;
+    check('the order carries comments with parts, status and replies', pins.length === 3 && pins[0].part === 'roof.stl' && pins[0].status === 'resolved' && pins[0].replies.length === 2 && pins[0].pos[2] === 3 && pins[1].status === 'open', pins);
+    r = await shopA.post(`/client/orders/${cottage}/revision`, {});
+    check('send changes works with open comments and no extra text', r.status === 200 && r.data.round === 2, r.data);
+    r = await modeler.get('/team/orders/' + cottage);
+    check('the round summary points at the open comments', r.data.order.requests[0].body.includes('2 open comments'), r.data.order.requests[0]);
+    r = await shopB.post(`/pins/${p2}/replies`, { body: 'hack' });
+    check('other shops cannot reply', r.status === 404, r.status);
+  }
 
   // ---------------- invoices
   r = await modeler.get('/team/invoices');

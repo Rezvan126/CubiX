@@ -90,11 +90,13 @@ try {
   await client.fill('input[name=name]', 'Emma Wilson'); await client.fill('input[name=email]', 'emma@minis.test'); await client.fill('input[name=shop]', 'Emma Minis');
   await client.fill('input[name=url]', 'etsy.com/shop/EmmaMinis'); await client.fill('input[name=password]', 'emmapass123');
   await client.click('button[type=submit]');
-  await client.waitForSelector('h1:text("New order")');
+  await client.waitForSelector('h1:text("Your free model")');
   check('signup lands on new order with free offer', (await client.textContent('button[type=submit]')).includes('free'));
   await client.fill('input[name=title]', 'Blue farmhouse with porch');
-  await client.click('label:has-text("House replica")'); await client.fill('input[name=size]', '15 cm'); await client.fill('input[name=printer]', 'Bambu Lab X1C');
+  await client.fill('input[name=size]', '15 cm');
   await client.fill('textarea[name=notes]', 'Keep the white fence and the red door.');
+  await client.fill('textarea[name=customer_notes]', 'Buyer: our dog Max should sit by the door');
+  check('the request form is short: what, files, notes, Etsy notes, size', (await client.$$('#nf input, #nf textarea, #nf select')).length <= 6);
   await client.click('button[type=submit]');
   await client.waitForSelector('.form-msg.err'); check('order needs a file', (await client.textContent('.form-msg')).includes('photo'));
   await client.setInputFiles('#dz input[type=file]', [SAMPLE, HEIC]);
@@ -291,10 +293,14 @@ try {
   await mod.keyboard.press('Escape');
 
   // ---------------------------------------------------------------- production control, rules, rounds and 3D pins
-  const STL = SHOTS + 'cube.stl';
-  { const v = [[0,0,0],[20,0,0],[20,20,0],[0,20,0],[0,0,20],[20,0,20],[20,20,20],[0,20,20]], f = [[0,2,1],[0,3,2],[4,5,6],[4,6,7],[0,1,5],[0,5,4],[1,2,6],[1,6,5],[2,3,7],[2,7,6],[3,0,4],[3,4,7]];
-    fs.writeFileSync(STL, 'solid cube\n' + f.map(t => ' facet normal 0 0 0\n  outer loop\n' + t.map(i => `   vertex ${v[i].join(' ')}\n`).join('') + '  endloop\n endfacet\n').join('') + 'endsolid cube\n'); }
-  await team.evaluate(async () => fetch('/api/team/rules', { method: 'POST', headers: { 'content-type': 'application/json', 'x-cubix': '1' }, body: JSON.stringify({ scope: 'product', product: 'House replica', title: 'Hollow body', body: 'Hollow, 2 mm walls, open underneath, every window cut through.' }) }));
+  const stlBox = (z0, z1) => { const v = [[0,0,z0],[20,0,z0],[20,20,z0],[0,20,z0],[0,0,z1],[20,0,z1],[20,20,z1],[0,20,z1]], f = [[0,2,1],[0,3,2],[4,5,6],[4,6,7],[0,1,5],[0,5,4],[1,2,6],[1,6,5],[2,3,7],[2,7,6],[3,0,4],[3,4,7]];
+    return 'solid part\n' + f.map(t => ' facet normal 0 0 0\n  outer loop\n' + t.map(i => `   vertex ${v[i].join(' ')}\n`).join('') + '  endloop\n endfacet\n').join('') + 'endsolid part\n'; };
+  const STL = SHOTS + 'ground-floor.stl', STL2 = SHOTS + 'roof.stl';
+  fs.writeFileSync(STL, stlBox(0, 20)); fs.writeFileSync(STL2, stlBox(20, 32));
+  await team.evaluate(async () => {
+    await fetch('/api/team/rules', { method: 'POST', headers: { 'content-type': 'application/json', 'x-cubix': '1' }, body: JSON.stringify({ scope: 'product', product: 'House replica', title: 'Hollow body', body: 'Hollow, 2 mm walls, open underneath, every window cut through.' }) });
+    await fetch('/api/team/settings', { method: 'PATCH', headers: { 'content-type': 'application/json', 'x-cubix': '1' }, body: JSON.stringify({ qc_enabled: '1' }) });
+  });
   await mod.goto(BASE + '/team/#/board'); await mod.waitForSelector('#takeNext');
   check('board shows the Job Bank with the hold count', (await mod.textContent('.jobbank')).includes('You hold'));
   await mod.click('#takeNext'); await mod.waitForSelector('.drawer h2');
@@ -303,36 +309,56 @@ try {
   check('the job shows a live hand in countdown', await mod.isVisible('.drawer-head [data-until]'));
   const cozyId = new URL(mod.url()).hash.split('o=')[1];
   await shot(mod, '20-modeler-job'); await audit(mod, 'modeler job');
-  await sendFiles(mod, 'preview', [STL]);
+  await sendFiles(mod, 'preview', [STL, STL2]);
   await mod.waitForSelector('.drawer .pill.st-review');
-  check('modeler hand in goes to QC, not to the client', await mod.isVisible('.drawer .qcbox'));
+  check('modeler hands in two part files; with QC on it waits for review', await mod.isVisible('.drawer .qcbox'));
   await mod.keyboard.press('Escape');
   await team.goto(BASE + '/team/#/orders?o=' + cozyId); await team.waitForSelector('.drawer .qcbox [data-act=qcpass]');
   await shot(team, '21-team-qc'); await team.click('.drawer [data-act=qcpass]'); await team.waitForSelector('.drawer .pill.st-preview');
   check('admin passes QC and the preview goes out', true);
   await team.keyboard.press('Escape');
-  await olivia.goto(BASE + '/app/#/orders/' + cozyId); await olivia.waitForSelector('#prev3d canvas');
-  await olivia.waitForSelector('#prev3d .v3d-msg[hidden]', { state: 'attached', timeout: 20000 });
-  check('client sees the model in 3D', true);
-  await shot(olivia, '22-client-3d-preview');
-  await olivia.click('#changes'); await olivia.waitForSelector('#pin3d .v3d-msg[hidden]', { state: 'attached', timeout: 20000 });
-  const cb = await (await olivia.$('#pin3d canvas')).boundingBox();
+  await team.evaluate(async () => fetch('/api/team/settings', { method: 'PATCH', headers: { 'content-type': 'application/json', 'x-cubix': '1' }, body: JSON.stringify({ qc_enabled: '0' }) }));
+
+  // the seller reviews the model: parts, cut, comments
+  await olivia.goto(BASE + '/app/#/orders/' + cozyId); await olivia.waitForSelector('#rv canvas');
+  await olivia.waitForSelector('#rv .v3d-msg[hidden]', { state: 'attached', timeout: 20000 });
+  check('seller sees both parts of the model with show and hide switches', (await olivia.$$('#rv .v3d-part')).length === 2);
+  check('seller can cut through the floors', await olivia.isVisible('#rv .v3d-cut input'));
+  const cb = await (await olivia.$('#rv canvas')).boundingBox();
   await olivia.mouse.click(cb.x + cb.width / 2, cb.y + cb.height / 2);
-  await olivia.waitForSelector('#pinNotes [data-note="0"]');
-  check('clicking the model drops pin 1', (await olivia.$$('#pin3d .v3d-pin')).length === 1);
-  await olivia.fill('#pinNotes [data-note="0"]', 'Make this wall taller');
-  await olivia.fill('.modal textarea[name=body]', 'Please also round the roof edge.');
-  await shot(olivia, '23-client-pin'); await audit(olivia, 'client pin modal');
+  await olivia.waitForSelector('#rv .newpin textarea');
+  await olivia.fill('#rv .newpin textarea', 'Make this wall taller');
+  await olivia.click('#rv .newpin button[type=submit]');
+  await olivia.waitForSelector('#rv .thread-pin[data-pin="1"]');
+  check('the comment is pinned on the model and listed', (await olivia.$$('#rv .v3d-pin')).length === 1 && (await olivia.textContent('#rv .thread-pin')).includes('Make this wall taller'));
+  await olivia.click('#rv .v3d-part:has-text("roof") input'); await olivia.waitForTimeout(200);
+  await olivia.$eval('#rv .v3d-cut input', el => { el.value = 50; el.dispatchEvent(new Event('input', { bubbles: true })); });
+  await shot(olivia, '22-client-review'); await audit(olivia, 'client review');
+  await olivia.$eval('#rv .v3d-reset', el => el.click());
+  check('Send changes counts the open comment', (await olivia.textContent('#changes')).includes('1 comment'));
+  await olivia.click('#changes'); await olivia.fill('.modal textarea[name=body]', 'Please also round the roof edge.');
+  await shot(olivia, '23-client-send-changes');
   await olivia.click('.modal button[type=submit]'); await olivia.waitForSelector('text=We are making your changes');
-  check('client sends round 2 with a pin', true);
+  check('seller sends round 2', true);
+
+  // the team works through the comments
   await team.goto(BASE + '/team/#/orders?o=' + cozyId); await team.waitForSelector('.drawer .roundbox');
   const rb = await team.textContent('.drawer .roundbox');
-  check('team sees round 2 with the pin note and the client words', rb.includes('round 2') && rb.includes('Make this wall taller') && rb.includes('round the roof edge'), rb.slice(0, 200));
-  check('team sees the 3D model with the pin', !!(await team.waitForSelector('.drawer .roundbox .v3d-pin', { timeout: 20000 })));
+  check('team sees round 2 with the seller words', rb.includes('round 2') && rb.includes('round the roof edge'), rb.slice(0, 200));
+  await team.waitForSelector('.drawer #trv .thread-pin[data-pin="1"]');
+  check('team sees the comment on the model', (await team.textContent('.drawer #trv .thread-pin')).includes('Make this wall taller') && !!(await team.waitForSelector('.drawer #trv .v3d-pin', { timeout: 20000 })));
   check('new client change shows a Got it banner', await team.isVisible('.drawer [data-act=gotit]'));
+  await team.fill('.drawer #trv [data-reply] input', 'Raised by 3 mm in the next round');
+  await team.click('.drawer #trv [data-reply] button'); await team.waitForSelector('.drawer #trv .rep.team');
+  check('team replies on the comment', true);
+  await team.click('.drawer #trv [data-resolve]'); await team.waitForSelector('.drawer #trv .rv-count:has-text("0 open, 1 resolved")');
+  check('team marks the comment resolved', true);
   await team.click('.drawer [data-act=gotit]'); await team.waitForSelector('.drawer [data-act=gotit]', { state: 'detached' });
   await shot(team, '24-team-round2'); await audit(team, 'team round 2');
   await team.keyboard.press('Escape');
+  await olivia.reload(); await olivia.waitForSelector('#rv .rv-res');
+  await olivia.check('#rv .rv-res'); await olivia.waitForSelector('#rv .thread-pin.res .rep.team');
+  check('seller sees the reply and that the comment is resolved', (await olivia.textContent('#rv .thread-pin.res')).includes('Raised by 3 mm'));
   await team.goto(BASE + '/team/#/handbook'); await team.waitForSelector('.rulecard');
   check('handbook lists the rule', (await team.textContent('.handbook')).includes('Hollow body'));
   await shot(team, '25-team-handbook'); await audit(team, 'team handbook');

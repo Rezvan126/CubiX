@@ -439,11 +439,11 @@
           ${admin() ? `<div class="row wrap"><button class="btn btn-ok btn-sm" data-act="qcpass">${icon('check')} Pass and send to the client</button><button class="btn btn-line btn-sm" data-act="qcback">Send back to the modeler</button></div>` : '<p class="small">An admin checks this before it goes to the client.</p>'}</section>` : ''}
         ${cur ? `<section class="roundbox"><div class="row wrap" style="justify-content:space-between"><h3>What to change, round ${cur.round}</h3><span class="small muted">${esc(cur.author || 'Client')} · ${ago(cur.created_at)}</span></div>
           ${lastModel ? `<p class="small">Start from the last round: <a href="${CX.fileUrl(lastModel.id)}" style="font-weight:600">${esc(lastModel.name)}</a></p>` : ''}
-          <div class="two"><div>${(cur.model_file && o.files.find(f => f.id === cur.model_file)) || lastModel ? `<div data-mount3d="${(o.files.find(f => f.id === cur.model_file) || lastModel).id}" data-name="${esc((o.files.find(f => f.id === cur.model_file) || lastModel).name)}" data-pinset="cur"></div>` : '<p class="small muted">No 3D model to show.</p>'}</div>
-            <div style="display:grid;gap:10px"><p style="white-space:pre-wrap;font-size:14.5px">${esc(cur.body)}</p>${pinList(cur.pins, 'cur')}
-            ${o.files.filter(f => f.request_id === cur.id).length ? `<div class="files">${o.files.filter(f => f.request_id === cur.id).map(fileTile).join('')}</div>` : ''}</div></div>
+          <div style="display:grid;gap:10px"><p style="white-space:pre-wrap;font-size:14.5px">${esc(cur.body)}</p>${cur.pins.length ? pinList(cur.pins, 'cur') : ''}
+            ${o.files.filter(f => f.request_id === cur.id).length ? `<div class="files">${o.files.filter(f => f.request_id === cur.id).map(fileTile).join('')}</div>` : ''}</div>
           ${reqs.length > 1 ? `<details><summary class="small" style="cursor:pointer;font-weight:600">Earlier requests (${reqs.length - 1})</summary><div style="display:grid;gap:12px;margin-top:10px">${reqs.slice(0, -1).reverse().map(r => `<div style="padding:10px 12px;background:#fff;border-radius:10px;border:1px solid var(--line)"><b class="small">Round ${r.round} · ${date(r.created_at)}</b><p style="white-space:pre-wrap;font-size:13.5px;margin:4px 0 6px">${esc(r.body)}</p>${r.pins.length ? r.pins.map(p => `<div class="small muted">Pin ${p.n}: ${esc(p.note || 'No note')}</div>`).join('') : ''}</div>`).join('')}</div></details>` : ''}
         </section>` : ''}
+        ${CX.roundModels(o, true).length ? `<section class="card"><div class="card-head"><h3>Model and comments</h3><span class="small muted">${(() => { const ms = CX.roundModels(o, true); return `${ms[0].kind === 'final' ? 'Final' : 'Preview'} version ${ms[0].version}${ms.length > 1 ? `, ${ms.length} parts` : ''}`; })()}</span></div><div id="trv"></div></section>` : ''}
         <section class="card card-pad"><div class="ctrls">
           <label class="field"><span>Status</span><select class="input input-sm" data-set="status">${Object.entries(CX.STATUS).map(([k, l]) => `<option value="${k}" ${o.status === k ? 'selected' : ''} ${k === 'paid' && !admin() ? 'disabled' : ''}>${l}</option>`).join('')}</select></label>
           <label class="field"><span>Modeler</span><select class="input input-sm" data-set="assignee_id"><option value="">Unassigned</option>${canAssign.map(m => `<option value="${m.id}" ${o.assignee_id === m.id ? 'selected' : ''}>${esc(m.name)}${m.id === S.me.id ? ' (me)' : ''}</option>`).join('')}</select></label>
@@ -462,7 +462,8 @@
         </section>
         <section class="card"><div class="card-head"><h3>Brief</h3></div>
           <dl class="specs">${[['Product', o.product], ['Size', o.size], ['Printer', o.printer], ['Formats', o.formats], ['Came through', o.channel], ['Lead source', o.source], ['Ordered', dateTime(o.created_at)], ['Delivered', o.delivered_at ? dateTime(o.delivered_at) : ''], ['Approved', o.approved_at ? dateTime(o.approved_at) : '']].filter(x => x[1]).map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join('')}</dl>
-          ${o.notes ? `<div class="notes">${esc(o.notes)}</div>` : ''}</section>
+          ${o.notes ? `<div class="notes"><b class="small" style="color:var(--ink)">Seller's notes</b><br>${esc(o.notes)}</div>` : ''}
+          ${o.customer_notes ? `<div class="notes"><b class="small" style="color:var(--ink)">Etsy customer's notes</b><br>${esc(o.customer_notes)}</div>` : ''}</section>
         ${admin() ? `<section class="card"><div class="card-head"><h3>Invoices</h3><button class="btn btn-line btn-sm" data-newinv>${icon('plus')} Create invoice</button></div>
           ${o.invoices && o.invoices.length ? `<div class="alist">${o.invoices.map(i => `<button class="aitem" data-inv="${i.id}"><div class="grow"><div class="ttl">${esc(i.number)}</div><div class="sub">${date(i.issued_at)}</div></div><span class="num small" style="font-weight:600">${esc(i.currency)} ${CX.amount(i.total)}</span>${invPill(i.status)}</button>`).join('')}</div>`
           : `<p class="small muted" style="padding:14px 20px">No invoice yet. ${o.is_free ? 'This is a free model.' : 'Create one from this order in a click.'}</p>`}</section>` : ''}
@@ -518,6 +519,8 @@
       $$(`[data-pins="${el.dataset.pinset}"] [data-pin]`, dr).forEach(b => b.addEventListener('click', () => v.focusPin(+b.dataset.pin)));
     }).catch(() => { el.innerHTML = '<p class="small muted">The 3D viewer could not load. Download the file instead.</p>'; }));
     $$('[data-3d]', dr).forEach(b => b.addEventListener('click', () => open3d(b.dataset['3d'], b.dataset.name)));
+    const trv = $('#trv', dr);
+    if (trv) (S.viewers = S.viewers || []).push(CX.review(trv, { order: o, files: CX.roundModels(o, true), role: 'team', canComment: true, load: async () => (await get('/team/orders/' + o.id)).order }));
     const del = $('#delOrder', dr);
     del && del.addEventListener('click', async () => {
       if (!(await CX.confirm(`Delete ${o.code}?`, 'The order, its files, messages and history are removed for good. Use this for spam, tests or duplicates.', 'Delete order'))) return;
@@ -527,15 +530,17 @@
     ni && ni.addEventListener('click', async () => { CX.busy(ni, true); try { const r = await post('/team/invoices', { order_id: o.id }); invoiceEditor(r.invoice.id, () => renderDrawer(o.id, true)); } catch (e) { fail(e); } finally { CX.busy(ni, false); } });
     $$('[data-inv]', dr).forEach(b => b.addEventListener('click', () => invoiceEditor(b.dataset.inv, () => renderDrawer(o.id, true))));
     const inp = $('#upInput', dr); let kind = 'preview';
-    $$('[data-up]', dr).forEach(b => b.addEventListener('click', () => { kind = b.dataset.up; inp.accept = kind === 'preview' ? 'image/*,.pdf,.mp4,.glb' : ''; inp.click(); }));
+    // any file type: STL, 3MF, OBJ, GLB, renders, PDFs. Several part files (ground floor, upper floor, roof) go up together as one round.
+    $$('[data-up]', dr).forEach(b => b.addEventListener('click', () => { kind = b.dataset.up; inp.removeAttribute('accept'); inp.click(); }));
     inp.addEventListener('change', async () => {
       if (!inp.files.length) return;
-      const f = new FormData(); f.append('kind', kind); const picked = [...inp.files]; for (const file of picked) f.append('files', file);
-      await CX.addThumbs(f, picked);
+      const picked = [...inp.files]; inp.value = '';
+      if (picked.some(x => x.size > 100 * 1024 * 1024)) return toast('Each file must be under 100 MB.', true);
       const prog = $('#upProg', dr); prog.hidden = false; $$('[data-up],[data-act]', dr).forEach(b => b.disabled = true);
       try {
-        const r = await CX.upload(`/team/orders/${o.id}/files`, f, p => { prog.firstElementChild.style.width = (p * 100) + '%'; });
-        toast(kind === 'final' ? 'Final files delivered. The shop can download them now.' : `Preview version ${r.version} sent to the shop`);
+        const ids = await CX.uploadFiles(picked, p => { prog.firstElementChild.style.width = (p * 100) + '%'; });
+        const r = await post(`/team/orders/${o.id}/files`, { kind, upload_ids: ids });
+        toast(kind === 'final' ? 'Final files delivered. The shop can download them now.' : r.status === 'review' ? `Version ${r.version} handed in for QC` : `Preview version ${r.version} sent to the shop`);
         refreshOverview(); await renderDrawer(o.id, true); renderView(false);
       } catch (e) { fail(e); prog.hidden = true; $$('[data-up],[data-act]', dr).forEach(b => b.disabled = false); }
     });
@@ -623,6 +628,9 @@
         <label class="field set-wide"><span>Webhook link</span><input class="input" name="alert_webhook" value="${esc(st.alert_webhook)}" placeholder="https://hooks.slack.com/services/... or https://discord.com/api/webhooks/..."></label>
         <details class="set-wide small muted"><summary style="cursor:pointer;font-weight:600">How do I get a webhook link?</summary><p style="margin-top:8px"><b>Discord:</b> channel settings, Integrations, Webhooks, New Webhook, Copy Webhook URL.<br><b>Slack:</b> api.slack.com/apps, Create New App, Incoming Webhooks, turn on, Add New Webhook, pick the channel, copy the link.<br><b>Google Chat:</b> space name, Apps and integrations, Webhooks, Add.</p></details>
         <div class="set-wide"><button type="button" class="btn btn-line btn-sm" id="testAlert">${icon('zap')} Send a test alert</button></div></div></section>
+      <section class="card"><div class="card-head"><h2>${icon('shield')} Review before the seller</h2><span class="pill ${st.qc_enabled === '1' ? 'st-delivered' : 'st-cancelled'}">${st.qc_enabled === '1' ? 'On' : 'Off'}</span></div><div class="card-pad set-grid">
+        <p class="small muted set-wide">When on, a modeler's preview waits in "In review" until an admin passes it. When off, previews go straight to the seller (admins' previews always do).</p>
+        <label class="field"><span>Admin check before previews go out</span><select class="input" name="qc_enabled"><option value="0" ${st.qc_enabled !== '1' ? 'selected' : ''}>Off, send straight to the seller</option><option value="1" ${st.qc_enabled === '1' ? 'selected' : ''}>On, an admin checks first</option></select></label></div></section>
       <section class="card"><div class="card-head"><h2>${icon('file')} Invoice details</h2></div><div class="card-pad set-grid">
         <label class="field"><span>Business name</span><input class="input" name="biz_name" value="${esc(st.biz_name)}" required></label>
         <label class="field"><span>Tagline</span><input class="input" name="biz_tagline" value="${esc(st.biz_tagline)}"></label>

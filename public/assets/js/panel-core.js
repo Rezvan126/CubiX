@@ -178,8 +178,48 @@
   }
   CX.convertHeic = convertHeic;
 
+  // ---------------------------------------------------------------- chunked uploads
+  // Sends every file in 1.5 MB parts (3 at a time, each retried), so files up to 100 MB work on the free plan.
+  // onProgress(0..1) covers all files together. Returns the upload ids to send with the order, message or hand in.
+  CX.uploadFiles = async (files, onProgress) => {
+    const list = [...files]; if (!list.length) return [];
+    const total = list.reduce((a, f) => a + f.size, 0) || 1; let done = 0;
+    const tick = n => { done += n; onProgress && onProgress(Math.min(1, done / total)); };
+    const ids = [];
+    const thumbs = await CX.makeThumbs(list);
+    for (const f of list) {
+      if (f.size > 100 * 1024 * 1024) throw new ApiError(413, { message: `${f.name} is over 100 MB. Share a download link in the notes instead.` });
+      const up = await CX.post('/uploads', { name: f.name, size: f.size, type: f.type || '' });
+      const t = thumbs.find(x => x.name === f.name);
+      if (t) await CX.putRaw(`/uploads/${up.id}/thumb`, t).catch(() => {});
+      let next = 0;
+      const worker = async () => {
+        while (next < up.parts) {
+          const n = next++, blob = f.slice(n * up.part_size, Math.min(f.size, (n + 1) * up.part_size));
+          for (let attempt = 1; ; attempt++) {
+            try { await CX.putRaw(`/uploads/${up.id}/${n}`, blob); break; }
+            catch (e) { if (attempt >= 3 || (e.status && e.status < 500 && e.status !== 429)) throw e; await new Promise(r => setTimeout(r, 800 * attempt)); }
+          }
+          tick(blob.size);
+        }
+      };
+      await Promise.all([worker(), worker(), worker()]);
+      await CX.post(`/uploads/${up.id}/finish`);
+      ids.push(up.id);
+    }
+    return ids;
+  };
+  CX.putRaw = async (path, blob) => {
+    const headers = { 'x-cubix': '1', 'content-type': 'application/octet-stream' };
+    const bm = getBm(); if (bm) headers['x-d1-bookmark'] = bm;
+    let r; try { r = await fetch('/api' + path, { method: 'PUT', headers, body: blob, credentials: 'same-origin' }); }
+    catch { throw new ApiError(0, { message: 'Upload interrupted. Check your connection and try again.' }); }
+    setBm(r.headers.get('x-d1-bookmark'));
+    if (!r.ok) { let d = null; try { d = await r.json(); } catch {} throw new ApiError(r.status, d); }
+  };
+
   // File picker with drag and drop, previews and removal. Returns { files() , clear() }.
-  CX.dropzone = (el, { accept = '', hint = 'Photos, sketches, PDFs or STL files up to 25 MB each' } = {}) => {
+  CX.dropzone = (el, { accept = '', hint = 'Photos (iPhone too), screenshots, PDFs, sketches or 3D files, up to 100 MB each' } = {}) => {
     let list = [];
     el.innerHTML = `<label class="drop">${CX.icon('upload')}<b>Drop files here or click to choose</b><span class="small muted">${hint}</span><input type="file" multiple ${accept ? `accept="${accept}"` : ''}></label><div class="filelist"></div>`;
     const drop = el.querySelector('.drop'), input = el.querySelector('input'), out = el.querySelector('.filelist');
@@ -192,7 +232,7 @@
     const add = async picked => {
       const fs = await convertHeic(picked, () => CX.toast('Converting iPhone photos, one moment'));
       for (const f of fs) {
-        if (f.size > 25 * 1024 * 1024) { CX.toast(`${f.name} is over 25 MB. Email it to us or share a link in the notes.`, true); continue; }
+        if (f.size > 100 * 1024 * 1024) { CX.toast(`${f.name} is over 100 MB. Share a download link in the notes instead.`, true); continue; }
         if (list.length >= 20) { CX.toast('Up to 20 files per upload.', true); break; }
         list.push(f);
       }
@@ -258,6 +298,74 @@
       const obs = new MutationObserver(() => { if (!document.body.contains(box)) { obs.disconnect(); viewer && viewer.destroy(); } });
       obs.observe(document.body, { childList: true });
     });
+  };
+
+  // ---------------------------------------------------------------- model review: 3D viewer + comment threads
+  // CX.review(el, { order, files, role: 'client' | 'team', canComment, load }) ; load() returns the fresh order.
+  CX.review = (el, { order, files, role, canComment, load }) => {
+    const esc = CX.esc, icon = CX.icon;
+    let o = order, viewer = null, pick = null, showResolved = false, active = null;
+    el.classList.add('rv-wrap');
+    el.innerHTML = `<div class="review"><div><div class="rv3d"><div class="v3d-stage"><div class="v3d-msg">Loading 3D model</div></div></div></div><div class="threads-wrap"><div class="row" style="justify-content:space-between;margin-bottom:8px"><b class="small rv-count"></b><label class="check small"><input type="checkbox" class="rv-res"> Show resolved</label></div><div class="newpin-slot"></div><div class="threads"></div></div></div>`;
+    const list = el.querySelector('.threads'), slot = el.querySelector('.newpin-slot');
+    const mine = r => (role === 'team') === (r.author_role !== 'client');
+    const draw = () => {
+      const pins = o.pins || [], open = pins.filter(p => p.status === 'open'), res = pins.filter(p => p.status === 'resolved');
+      el.querySelector('.rv-count').textContent = pins.length ? `${open.length} open, ${res.length} resolved` : (canComment ? 'No comments yet. Click the model to add one.' : 'No comments yet.');
+      const shown = showResolved ? pins : open;
+      list.innerHTML = shown.length ? shown.map(p => `<div class="thread-pin ${p.status === 'resolved' ? 'res' : ''} ${active === p.n ? 'active' : ''}" data-pin="${p.n}" data-id="${p.id}">
+        <div class="hd"><button type="button" class="pn" data-focus="${p.n}" aria-label="Show comment ${p.n} on the model">${p.n}</button><div class="grow"><div class="who">${esc(p.author || '')}${p.author_role === 'client' ? '' : ', CubiX'} · round ${p.round}${p.part ? ` · ${esc(p.part.replace(/\.[^.]+$/, ''))}` : ''} · ${CX.ago(p.created_at)}</div></div>
+          ${p.status === 'open' ? (role === 'team' ? `<button type="button" class="btn btn-line btn-sm" data-resolve="${p.id}">${icon('check')} Resolved</button>` : '') : `<button type="button" class="link small" data-reopen="${p.id}">Reopen</button>`}</div>
+        <div class="txt">${esc(p.body)}</div>
+        ${(p.replies || []).map(r => `<div class="rep ${r.author_role === 'client' ? '' : 'team'}"><b class="small">${esc(r.author || '')}${r.author_role === 'client' ? '' : ', CubiX'}</b> <span class="small muted">${CX.ago(r.created_at)}</span><br>${esc(r.body)}</div>`).join('')}
+        <form data-reply="${p.id}"><input class="input input-sm" name="body" placeholder="Reply" maxlength="2000" aria-label="Reply to comment ${p.n}"><button class="btn btn-dark btn-sm" type="submit">Send</button></form></div>`).join('')
+        : (pins.length ? '<p class="small muted">All comments are resolved. Tick "Show resolved" to see them.</p>' : '');
+      if (viewer) viewer.setPins(showResolved ? pins : open);
+    };
+    const refresh = async () => { o = await load(); draw(); };
+    const newPin = p => {
+      pick = p;
+      slot.innerHTML = `<form class="newpin"><b class="small">New comment${p.part ? ` on ${esc(p.part.replace(/\.[^.]+$/, ''))}` : ''}</b><textarea class="input" name="body" required maxlength="2000" placeholder="What should change at this spot?" style="min-height:70px"></textarea>
+        <div class="row"><button class="btn btn-primary btn-sm" type="submit">Save comment</button><button type="button" class="btn btn-ghost btn-sm" data-cancel>Cancel</button></div><p class="form-msg" role="alert"></p></form>`;
+      const f = slot.querySelector('form'); f.body.focus();
+      f.querySelector('[data-cancel]').addEventListener('click', () => { slot.innerHTML = ''; pick = null; viewer && viewer.clearTemp(); });
+      CX.submit(f, async d => {
+        if (!d.body.trim()) throw new Error('Write the comment first.');
+        const path = role === 'team' ? `/team/orders/${o.id}/pins` : `/client/orders/${o.id}/pins`;
+        const lastModel = files.find(x => x.name === pick.part) || files[0];
+        const r = await CX.post(path, { body: d.body, pos: pick.pos, part: pick.part, model_file: lastModel && lastModel.id });
+        slot.innerHTML = ''; pick = null; viewer && viewer.clearTemp(); active = r.n; CX.toast(`Comment ${r.n} saved`); await refresh();
+      });
+    };
+    el.querySelector('.rv-res').addEventListener('change', e => { showResolved = e.target.checked; draw(); });
+    list.addEventListener('click', async e => {
+      const fb = e.target.closest('[data-focus]'); if (fb) { active = +fb.dataset.focus; viewer && viewer.focusPin(active); list.querySelectorAll('.thread-pin').forEach(t => t.classList.toggle('active', +t.dataset.pin === active)); }
+      const rs = e.target.closest('[data-resolve],[data-reopen]');
+      if (rs) { try { await CX.post(`/pins/${rs.dataset.resolve || rs.dataset.reopen}/resolve`, { resolved: !!rs.dataset.resolve }); await refresh(); } catch (err) { CX.fail(err); } }
+    });
+    list.addEventListener('submit', async e => {
+      const f = e.target.closest('[data-reply]'); if (!f) return; e.preventDefault();
+      const body = f.body.value.trim(); if (!body) return;
+      f.querySelector('button').disabled = true;
+      try { await CX.post(`/pins/${f.dataset.reply}/replies`, { body }); await refresh(); } catch (err) { CX.fail(err); f.querySelector('button').disabled = false; }
+    });
+    CX.loadViewer().then(m => {
+      viewer = m.mount(el.querySelector('.rv3d'), { files: files.map(f => ({ url: CX.fileUrl(f.id), name: f.name })), pins: (o.pins || []).filter(p => p.status === 'open'), comment: canComment,
+        onPick: canComment ? newPin : null,
+        onPinClick: n => { active = n; const t = list.querySelector(`[data-pin="${n}"]`); if (t) { t.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } list.querySelectorAll('.thread-pin').forEach(x => x.classList.toggle('active', +x.dataset.pin === n)); } });
+      draw();
+    }).catch(() => { el.querySelector('.rv3d').innerHTML = '<p class="small muted">The 3D view could not load on this device. Download the files instead.</p>'; });
+    draw();
+    return { destroy: () => viewer && viewer.destroy(), refresh, openCount: () => (o.pins || []).filter(p => p.status === 'open').length };
+  };
+  // The model files of the newest round that has any (for the client: only released previews).
+  CX.roundModels = (o, includeHeld) => {
+    const models = o.files.filter(f => CX.isModel(f.name) && f.kind !== 'reference' && (includeHeld || f.released !== 0));
+    if (!models.length) return [];
+    const finals = models.filter(f => f.kind === 'final'), previews = models.filter(f => f.kind === 'preview');
+    const pool = ['delivered', 'paid'].includes(o.status) && finals.length ? finals : (previews.length ? previews : finals);
+    const v = Math.max(...pool.map(f => f.version));
+    return pool.filter(f => f.version === v);
   };
 
   // tiny hash router: '#/a/b?x=1' -> { parts: ['a','b'], q: URLSearchParams }
