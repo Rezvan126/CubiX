@@ -359,6 +359,30 @@ async function run() {
     r = await shopB.get('/files/' + bigId);
     check('4 MB file comes back byte for byte (multi chunk storage)', r.status === 200 && h(r.data) === h(big), r.status);
   }
+  // invite a new shop from the dashboard
+  r = await modeler.post('/team/shops', { name: 'Hack Shop', email: em('hackshop') });
+  check('modeler cannot invite shops', r.status === 403, r.data);
+  r = await admin.post('/team/shops', { name: '', email: em('noname') });
+  check('invite needs a shop name', r.status === 422, r.data);
+  r = await admin.post('/team/shops', { name: 'Linden Prints', contact: 'Mia', email: em('linden'), url: 'etsy.com/shop/Linden', plan: 'starter' });
+  check('admin invites a new shop and gets a 7 day portal link', r.status === 201 && r.data.link.includes('/app/#/setup/'), r.data);
+  const invLink = r.data.link, invShop = r.data.id;
+  r = await admin.post('/team/shops', { name: 'Again', email: em('linden').toUpperCase() });
+  check('inviting an existing client email is refused', r.status === 409, r.data);
+  r = await admin.post('/team/shops', { name: 'Team clash', email: em('mod1') });
+  check('inviting a team member email is refused', r.status === 409, r.data);
+  {
+    const invited = new Client();
+    r = await invited.post('/auth/setup', { token: invLink.split('/').pop(), password: 'lindenpass1' });
+    check('invited owner sets a password and lands as client', r.status === 200 && r.data.role === 'client', r.data);
+    r = await invited.get('/auth/me');
+    check('invited owner sees their shop, plan and unused free model', r.data.shop.name === 'Linden Prints' && r.data.shop.plan === 'starter' && r.data.shop.free_used === 0 && r.data.user.name === 'Mia', r.data);
+    r = await invited.get('/client/orders');
+    check('invited owner starts with no orders', r.status === 200 && r.data.orders.length === 0, r.data);
+    r = await admin.get('/team/shops/' + invShop);
+    check('invited shop shows an active login', r.data.users[0].has_login === 1, r.data.users);
+  }
+
   // forgot password: same answer for real and unknown emails
   const r1 = await anon.post('/auth/forgot', { email: em('shopb') }), r2 = await anon.post('/auth/forgot', { email: 'nobody@nowhere.test' });
   check('forgot password does not reveal which emails exist', r1.status === 200 && r2.status === 200 && JSON.stringify(r1.data) === JSON.stringify(r2.data));

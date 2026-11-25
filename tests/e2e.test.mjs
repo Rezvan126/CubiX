@@ -198,6 +198,20 @@ try {
   check('admin creates a client login link', shopLink.includes('/app/#/setup/'), shopLink);
   await team.click('.modal [data-close]');
   await shot(team, '14-team-shops'); await audit(team, 'team shops');
+  // invite a brand new shop from the dashboard
+  await team.click('#inviteShop'); await team.fill('.modal input[name=name]', 'Linden Prints'); await team.fill('.modal input[name=contact]', 'Mia');
+  await team.fill('.modal input[name=email]', 'mia@linden.test'); await team.selectOption('.modal select[name=plan]', 'starter');
+  await team.click('.modal button[type=submit]'); await team.waitForSelector('.modal h2:text("Invite ready")');
+  const invLink = (await team.textContent('.modal .copybox span')).trim();
+  check('invite a shop shows a portal link and a ready message', invLink.includes('/app/#/setup/') && (await team.inputValue('.modal textarea')).includes('Hi Mia'), invLink);
+  await shot(team, '15-team-invite-shop'); await audit(team, 'team invite shop');
+  await team.click('.modal [data-close]'); await team.waitForSelector('tr[data-s]:has-text("Linden Prints")');
+  check('invited shop appears in the list', true);
+  { const ictx = await browser.newContext({ viewport: { width: 1440, height: 900 } }); const ip = await ictx.newPage(); watch(ip, 'invited');
+    await ip.goto(invLink); await ip.fill('input[name=password]', 'lindenpass1'); await ip.fill('input[name=confirm]', 'lindenpass1'); await ip.click('button[type=submit]');
+    await ip.waitForSelector('text=Your first model is free.');
+    check('invited owner lands in the portal with the free model offer', (await ip.textContent('h1')).includes('My orders'));
+    await ictx.close(); }
 
   // shop owner from the website form activates their login
   const octx = await browser.newContext({ viewport: { width: 1440, height: 900 } }); const olivia = await octx.newPage(); watch(olivia, 'olivia');

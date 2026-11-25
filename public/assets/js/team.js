@@ -244,16 +244,42 @@
   // ---------------------------------------------------------------- shops
   async function viewShops(main) {
     const { shops } = await get('/team/shops');
-    main.innerHTML = `<div class="top"><div><h1>Shops</h1><p class="muted">${shops.length} shops have worked with you.</p></div></div>
+    main.innerHTML = `<div class="top"><div><h1>Shops</h1><p class="muted">${shops.length} shops have worked with you.</p></div>${admin() ? `<button class="btn btn-primary" id="inviteShop">${icon('plus')} Invite a shop</button>` : ''}</div>
       <div class="toolbar"><label class="search">${icon('search')}<span class="sr">Search shops</span><input class="input input-sm" id="shopQ" placeholder="Shop name or email"></label></div>
       <section class="card">${shops.length ? `<div class="table-wrap"><table class="t"><thead><tr><th>Shop</th><th>Plan</th><th>Orders</th><th class="hide-sm">Open</th><th class="hide-sm">Paid</th><th class="hide-sm">Last order</th><th class="hide-sm">Portal</th></tr></thead><tbody>
       ${shops.map(s => `<tr class="click" data-s="${s.id}" data-find="${esc((s.name + ' ' + (s.email || '')).toLowerCase())}" tabindex="0"><td><div style="font-weight:600;color:var(--ink)">${esc(s.name)}</div><div class="small muted">${esc(s.email || '')}</div></td>
         <td><span class="tag tag-plan">${CX.PLANS[s.plan] || s.plan}</span></td><td class="num">${s.orders}</td><td class="num hide-sm">${s.open_orders}</td><td class="num hide-sm">${money(s.revenue) || '$0'}</td>
         <td class="small muted hide-sm">${s.last_order ? ago(s.last_order) : 'None yet'}</td><td class="hide-sm">${s.active_logins ? '<span class="pill st-delivered">Active</span>' : '<span class="pill st-cancelled">No login yet</span>'}</td></tr>`).join('')}
-      </tbody></table></div>` : `<div class="empty">${icon('store')}<h3>No shops yet</h3><p>Shops appear here when they order through the website or sign up.</p></div>`}</section>`;
+      </tbody></table></div>` : `<div class="empty">${icon('store')}<h3>No shops yet</h3><p>Shops appear here when they order through the website, sign up, or when you invite them.</p></div>`}</section>`;
+    const inv = $('#inviteShop', main);
+    inv && inv.addEventListener('click', () => modal(`<h2>Invite a shop</h2><p class="muted small">Creates the shop and a portal login for its owner. You get a link to send them. It works once, for 7 days.</p>
+      <form id="isf" style="display:grid;gap:14px" novalidate>
+        <label class="field"><span>Shop name</span><input class="input" name="name" required placeholder="Emma Minis"></label>
+        <div class="grid2"><label class="field"><span>Contact name</span><input class="input" name="contact" placeholder="Emma"></label>
+        <label class="field"><span>Email</span><input class="input" type="email" name="email" required></label></div>
+        <div class="grid2"><label class="field"><span>Shop link</span><input class="input" name="url" placeholder="etsy.com/shop/..."></label>
+        <label class="field"><span>Plan</span><select class="input" name="plan">${Object.entries(CX.PLANS).map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select></label></div>
+        <p class="form-msg" role="alert"></p>
+        <div class="modal-actions"><button type="button" class="btn btn-line" data-close>Cancel</button><button class="btn btn-primary" type="submit">Create and get link</button></div></form>`, (box, close) => {
+      CX.submit($('#isf', box), async d => {
+        const r = await post('/team/shops', d); close(); renderView(false);
+        inviteReady(d.contact || d.name, r.link, r.emailed);
+      });
+    }));
     const sq = $('#shopQ', main);
     sq.addEventListener('input', () => { const v = sq.value.trim().toLowerCase(); $$('tr[data-s]', main).forEach(tr => tr.hidden = v && !tr.dataset.find.includes(v)); });
     $$('tr[data-s]', main).forEach(tr => { tr.addEventListener('click', () => shopModal(tr.dataset.s)); tr.addEventListener('keydown', e => e.key === 'Enter' && shopModal(tr.dataset.s)); });
+  }
+  function inviteReady(name, link, emailed) {
+    const msg = `Hi ${name},\n\nYour CubiX client portal is ready. Set your password here:\n${link}\n\nIn the portal you can send new orders, approve previews and download your print ready files. Your first model is free.\n\nThe link works once and expires in 7 days.`;
+    modal(`<h2>Invite ready</h2><p class="muted small">${emailed ? 'We emailed the invite. You can also send it yourself.' : 'Send this to the shop by email, Etsy message or WhatsApp.'}</p>
+      <div class="copybox"><span class="grow">${esc(link)}</span><button class="btn btn-dark btn-sm" data-copy="link">${icon('copy')} Copy link</button></div>
+      <label class="field"><span>Ready to send message</span><textarea class="input" readonly style="min-height:170px">${esc(msg)}</textarea></label>
+      <div class="modal-actions"><button class="btn btn-line" data-close>Done</button><button class="btn btn-primary" data-copy="msg">${icon('copy')} Copy message</button></div>`, box => {
+      $$('[data-copy]', box).forEach(b => b.addEventListener('click', async () => {
+        try { await navigator.clipboard.writeText(b.dataset.copy === 'msg' ? msg : link); b.innerHTML = icon('check') + ' Copied'; } catch { CX.toast('Select the text and copy it manually.', true); }
+      }));
+    });
   }
   async function shopModal(id) {
     let d; try { d = await get('/team/shops/' + id); } catch (e) { return fail(e); }

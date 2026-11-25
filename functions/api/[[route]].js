@@ -403,6 +403,25 @@ on('GET', '/team/shops/:id', TEAM, async ({ env, params }) => {
   const orders = await all(env, 'SELECT id, code, title, status, price, paid, is_free, created_at FROM orders WHERE shop_id = ? ORDER BY created_at DESC', shop.id);
   return json({ ok: true, shop, users, orders });
 });
+// Invite a new shop: creates the shop and its owner's portal account, and returns a one time login link.
+on('POST', '/team/shops', ADMIN, async ({ request, env }) => {
+  const b = await readBody(request);
+  const name = clean(field(b, 'name'), 120), contact = clean(field(b, 'contact'), 120), email = clean(field(b, 'email'), 200).toLowerCase();
+  const url = clean(field(b, 'url'), 300), plan = PLANS.includes(field(b, 'plan')) ? field(b, 'plan') : 'pay_per_model';
+  if (!name) throw new HttpError(422, 'invalid', 'Add the shop name.');
+  if (!validEmail(email)) throw new HttpError(422, 'invalid', 'Add a valid email address.');
+  const existing = await one(env, 'SELECT id, role, shop_id FROM users WHERE email = ?', email);
+  if (existing) throw new HttpError(409, 'exists', existing.role === 'client' ? 'This email already has a portal account. Open the shop and use Login link instead.' : 'This email belongs to a team member.');
+  const shopId = uid('s_'), userId = uid('u_'), at = now();
+  await env.DB.batch([
+    env.DB.prepare('INSERT INTO shops (id, name, url, plan, created_at) VALUES (?, ?, ?, ?, ?)').bind(shopId, name, url, plan, at),
+    env.DB.prepare(`INSERT INTO users (id, email, name, role, shop_id, created_at) VALUES (?, ?, ?, 'client', ?, ?)`).bind(userId, email, contact || name, shopId, at),
+  ]);
+  const t = await makeLinkToken(env, userId, 'setup', 24 * 7);
+  const link = `${siteUrl(request, env)}/app/#/setup/${t}`;
+  const emailed = await sendEmail(env, email, 'Your CubiX client portal', `Hi ${contact || name},\n\nYour CubiX portal is ready. Set your password here (valid for 7 days):\n${link}\n\nYour first model is free.`);
+  return json({ ok: true, id: shopId, link, emailed }, 201);
+});
 on('PATCH', '/team/shops/:id', ADMIN, async ({ request, env, params }) => {
   const b = await readBody(request), set = [], vals = [];
   if (b.plan !== undefined) { if (!PLANS.includes(b.plan)) throw new HttpError(422, 'invalid', 'Unknown plan.'); set.push('plan = ?'); vals.push(b.plan); }
