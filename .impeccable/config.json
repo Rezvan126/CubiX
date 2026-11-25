@@ -11,6 +11,11 @@
         ],
         "createdAt": "2026-11-22T02:27:08.539Z",
         "reason": "Claude: lightbox img slots are filled by site.js at open time; Assessment B confirmed no browser load fails"
+      },
+      {
+        "rule": "overused-font",
+        "value": "inter",
+        "createdAt": "2026-11-25T03:42:34.113Z"
       }
     ]
   }
