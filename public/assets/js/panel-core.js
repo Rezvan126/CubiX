@@ -46,11 +46,11 @@
 
   // ---------------------------------------------------------------- formatting
   CX.STATUS = {
-    new: 'New', confirmed: 'Confirmed', modeling: 'Modeling', preview: 'Preview sent', revisions: 'Revisions',
+    new: 'New', confirmed: 'Confirmed', modeling: 'Modeling', waiting: 'Waiting on client', review: 'In review', preview: 'Preview sent', revisions: 'Revisions',
     approved: 'Approved', delivered: 'Delivered', paid: 'Paid', cancelled: 'Cancelled',
   };
   CX.CLIENT_STATUS = {
-    new: 'Received', confirmed: 'In the queue', modeling: 'Being modeled', preview: 'Preview ready', revisions: 'Changes in progress',
+    new: 'Received', confirmed: 'In the queue', modeling: 'Being modeled', waiting: 'Waiting for you', review: 'Being modeled', preview: 'Preview ready', revisions: 'Changes in progress',
     approved: 'Approved, preparing files', delivered: 'Files ready', paid: 'Complete', cancelled: 'Cancelled',
   };
   CX.PLANS = { pay_per_model: 'Pay per model', starter: 'Starter', growth: 'Growth', studio: 'Studio' };
@@ -234,6 +234,31 @@
       await CX.post('/auth/password', { current: d.current, password: d.password }); close(); CX.toast('Password changed');
     });
   });
+
+  // ---------------------------------------------------------------- 3D viewer (loaded only when needed)
+  CX.isModel = name => /\.(stl|obj|3mf|glb|gltf)$/i.test(String(name || ''));
+  CX.loadViewer = () => CX._v3d || (CX._v3d = import((document.getElementById('v3d') || {}).href || '/assets/js/viewer3d.js'));
+  // Statuses the team adds on top of the client ones
+  // Ship by risk: the shop's Etsy ship date is close to, or before, our delivery.
+  CX.shipRisk = o => !!(o.ship_by && !['delivered', 'paid', 'cancelled'].includes(o.status) && (new Date(o.ship_by) - new Date(o.due_at) < 2 * 864e5 || new Date(o.ship_by) - Date.now() < 2 * 864e5));
+  // Live countdowns: any element with data-until="<iso>" shows the time left, refreshed every second.
+  CX.left = iso => { const ms = new Date(iso) - Date.now(), a = Math.abs(ms), d = Math.floor(a / 864e5), h = Math.floor(a % 864e5 / 36e5), m = Math.floor(a % 36e5 / 6e4), s = Math.floor(a % 6e4 / 1e3);
+    const t = d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m ${s}s`; return { late: ms < 0, text: t }; };
+  setInterval(() => { document.querySelectorAll('[data-until]').forEach(el => { const r = CX.left(el.dataset.until); el.textContent = (r.late ? `${el.dataset.late || 'Late by'} ` : `${el.dataset.pre || ''}`) + r.text; el.classList.toggle('late', r.late); }); }, 1000);
+  CX.countdown = (iso, pre = 'Hand in in ', lateText = 'Past due by') => { const r = CX.left(iso); return `<span class="due ${r.late ? 'late' : (new Date(iso) - Date.now() < 6 * 36e5 ? 'soon' : '')}" data-until="${iso}" data-pre="${pre}" data-late="${lateText}">${r.late ? lateText + ' ' : pre}${r.text}</span>`; };
+
+  // A model in its own window.
+  CX.open3d = (id, name) => {
+    let viewer;
+    CX.modal(`<div class="row" style="justify-content:space-between"><h2 class="ellipsis">${CX.esc(name)}</h2><button class="icon-btn" data-close aria-label="Close">${CX.icon('x')}</button></div><div id="m3d"></div>
+      <div class="modal-actions"><a class="btn btn-line" href="${CX.fileUrl(id)}">${CX.icon('download')} Download</a></div>`, box => {
+      box.classList.add('wide');
+      CX.loadViewer().then(m => { viewer = m.mount(CX.$('#m3d', box), { url: CX.fileUrl(id), name }); })
+        .catch(() => { CX.$('#m3d', box).innerHTML = '<p class="small muted">The 3D viewer could not load. Download the file instead.</p>'; });
+      const obs = new MutationObserver(() => { if (!document.body.contains(box)) { obs.disconnect(); viewer && viewer.destroy(); } });
+      obs.observe(document.body, { childList: true });
+    });
+  };
 
   // tiny hash router: '#/a/b?x=1' -> { parts: ['a','b'], q: URLSearchParams }
   CX.route = () => {

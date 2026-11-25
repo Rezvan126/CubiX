@@ -70,7 +70,17 @@ CREATE TABLE IF NOT EXISTS orders (
   updated_at   TEXT NOT NULL,
   delivered_at TEXT,
   approved_at  TEXT,
-  source       TEXT
+  source       TEXT,
+  handin_at    TEXT,
+  ship_by      TEXT,
+  group_id     TEXT,
+  item_no      INTEGER,
+  item_count   INTEGER,
+  wait_from    TEXT,
+  paused_at    TEXT,
+  preview_seen_at TEXT,
+  client_msg_at TEXT,
+  team_seen_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 CREATE INDEX IF NOT EXISTS idx_orders_shop ON orders(shop_id);
@@ -88,7 +98,9 @@ CREATE TABLE IF NOT EXISTS files (
   type        TEXT,
   uploaded_by TEXT REFERENCES users(id),
   created_at  TEXT NOT NULL,
-  thumb       BLOB
+  thumb       BLOB,
+  released    INTEGER NOT NULL DEFAULT 1,
+  request_id  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_files_order ON files(order_id);
 
@@ -163,3 +175,32 @@ CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_users_shop ON users(shop_id);
 CREATE INDEX IF NOT EXISTS idx_login_attempts ON login_attempts(email, at);
 CREATE INDEX IF NOT EXISTS idx_orders_created ON orders(created_at);
+
+-- Revision rounds: each change request, with numbered pins on the 3D model
+CREATE TABLE IF NOT EXISTS requests (
+  id          TEXT PRIMARY KEY,
+  order_id    TEXT NOT NULL REFERENCES orders(id),
+  round       INTEGER NOT NULL,
+  body        TEXT NOT NULL,
+  pins        TEXT NOT NULL DEFAULT '[]',
+  model_file  TEXT,
+  created_by  TEXT REFERENCES users(id),
+  created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_requests_order ON requests(order_id);
+
+-- Build rules: per product type (handbook) and per shop
+CREATE TABLE IF NOT EXISTS rules (
+  id          TEXT PRIMARY KEY,
+  scope       TEXT NOT NULL CHECK (scope IN ('product','shop')),
+  product     TEXT,
+  shop_id     TEXT REFERENCES shops(id),
+  title       TEXT NOT NULL,
+  body        TEXT NOT NULL,
+  updated_by  TEXT REFERENCES users(id),
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_rules_shop ON rules(shop_id);
+CREATE INDEX IF NOT EXISTS idx_orders_group ON orders(group_id);
+CREATE INDEX IF NOT EXISTS idx_files_request ON files(request_id);

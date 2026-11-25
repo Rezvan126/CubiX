@@ -458,3 +458,48 @@ a.kpi:hover{border-color:var(--ink);transform:translateY(-1px)}
 .set-save{position:sticky;bottom:0;display:flex;justify-content:flex-end;align-items:center;gap:14px;padding:14px 0;background:linear-gradient(transparent,var(--paper) 30%)}
 .main > .card{max-width:900px}
 @media (max-width:640px){.set-grid{grid-template-columns:1fr}.set-save{bottom:64px}}
+
+/* 3D viewer with pins */
+.v3d{display:grid;gap:8px}
+.v3d-stage{position:relative;aspect-ratio:4/3;max-height:460px;width:100%;border-radius:12px;overflow:hidden;background:radial-gradient(circle at 50% 35%,#ffffff,#eeedf5);border:1px solid var(--line)}
+.v3d-stage canvas{width:100%;height:100%;display:block;touch-action:none;cursor:grab}
+.v3d-stage canvas:active{cursor:grabbing}
+.v3d-msg{position:absolute;inset:0;display:grid;place-items:center;color:var(--muted);font-size:14px;padding:20px;text-align:center}
+.v3d-pins{position:absolute;inset:0;pointer-events:none}
+.v3d-pin{position:absolute;left:0;top:0;pointer-events:auto;min-width:26px;height:26px;padding:0 6px;border-radius:13px 13px 13px 2px;border:2px solid #fff;background:var(--accent);color:#fff;font-size:12px;font-weight:800;cursor:pointer;box-shadow:0 4px 12px -4px rgba(0,0,0,.5);transition:opacity .15s}
+.v3d-pin.on{background:var(--ink);transform-origin:bottom left}
+.v3d-bar{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.v3d-hint{font-size:12.5px;color:var(--muted)}
+.v3d-reset{border:1px solid var(--line-2);background:#fff;border-radius:8px;height:30px;padding:0 10px;font-size:12.5px;font-weight:600;cursor:pointer}
+.pinlist{list-style:none;margin:0;padding:0;display:grid;gap:8px}
+.pinlist li{display:grid;grid-template-columns:28px 1fr auto;gap:8px;align-items:start}
+.pinlist .pn{width:26px;height:26px;border-radius:13px 13px 13px 2px;background:var(--accent);color:#fff;font-size:12px;font-weight:800;display:grid;place-items:center;border:0;cursor:pointer}
+.pinlist p{margin:3px 0 0;font-size:14px}
+.st-review{background:#efe9ff;color:#5b2bb5}
+.st-waiting{background:#e7f2ff;color:#1d5bbf}
+.tag-risk{background:var(--bad-soft);color:var(--bad)}
+.tag-round{background:#efe9ff;color:#5b2bb5}
+.tag-item{background:var(--surface);color:var(--ink-2)}
+.unread-dot{width:9px;height:9px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 3px var(--accent-soft);flex:none}
+.banner-new{display:flex;gap:12px;align-items:flex-start;padding:14px 16px;border-radius:14px;background:var(--accent-soft);border:1.5px solid var(--accent)}
+.banner-new .grow p{font-size:14px;margin-top:3px;white-space:pre-wrap}
+.rulebox{padding:14px 16px;border-radius:14px;background:#f6f3ff;border:1.5px solid #d9ccff;display:grid;gap:8px}
+.rulebox h3{font-size:13px;letter-spacing:.04em;text-transform:uppercase;color:#5b2bb5}
+.rulebox .rule b{display:block;color:var(--ink);font-size:14px}
+.rulebox .rule p{font-size:13.5px;white-space:pre-wrap}
+.rulebox .rule small{color:var(--muted)}
+.qcbox{padding:16px;border-radius:14px;border:1.5px solid #c9b6ff;background:#fbf9ff;display:grid;gap:12px}
+.waitbox{padding:14px 16px;border-radius:14px;border:1.5px solid #b9d3f7;background:#f4f8ff;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.roundbox{padding:16px;border-radius:14px;border:1.5px solid #e6c36a;background:#fffbf0;display:grid;gap:12px}
+.roundbox .two{display:grid;grid-template-columns:1.1fr 1fr;gap:14px;align-items:start}
+.jobbank{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.jobbank .hold{font-size:13px;color:var(--muted)}
+.handbook{display:grid;gap:14px}
+.rulecard{padding:16px 18px;display:grid;gap:6px}
+.rulecard p{white-space:pre-wrap;font-size:14px}
+.siblings{display:flex;gap:6px;flex-wrap:wrap}
+.siblings a{font-size:12px;font-weight:700;padding:3px 9px;border-radius:8px;background:var(--surface);text-decoration:none;color:var(--ink-2)}
+.siblings a[aria-current]{background:var(--ink);color:#fff}
+.kpis.k8{grid-template-columns:repeat(4,minmax(0,1fr))}
+@media (max-width:1100px){.roundbox .two{grid-template-columns:1fr}}
+@media (max-width:640px){.kpis.k8{grid-template-columns:1fr 1fr}}

@@ -1,7 +1,7 @@
 // Shared helpers for the CubiX API: responses, ids, password hashing, sessions, email.
 
-export const STATUSES = ['new', 'confirmed', 'modeling', 'preview', 'revisions', 'approved', 'delivered', 'paid', 'cancelled'];
-export const OPEN_STATUSES = ['new', 'confirmed', 'modeling', 'preview', 'revisions', 'approved'];
+export const STATUSES = ['new', 'confirmed', 'modeling', 'waiting', 'review', 'preview', 'revisions', 'approved', 'delivered', 'paid', 'cancelled'];
+export const OPEN_STATUSES = ['new', 'confirmed', 'modeling', 'waiting', 'review', 'preview', 'revisions', 'approved'];
 export const PLANS = ['pay_per_model', 'starter', 'growth', 'studio'];
 export const TURNAROUND_HOURS = 48;
 export const MAX_FILE = 25 * 1024 * 1024;
@@ -128,7 +128,7 @@ export async function logEvent(env, orderId, userId, type, detail = null) {
 // ---------- files ----------
 export function safeName(name, i) { return (String(name || '').replace(/[^\w.\-() ]/g, '_').slice(0, 120)) || `file${i}`; }
 // thumbs: optional Map of file name -> small preview image made in the browser
-export async function storeFiles(env, orderId, list, kind, userId, thumbs) {
+export async function storeFiles(env, orderId, list, kind, userId, thumbs, opts = {}) {
   const files = list.filter(f => f && typeof f === 'object' && typeof f.arrayBuffer === 'function' && f.size > 0);
   if (files.length > MAX_FILES) throw new HttpError(413, 'too_many_files', `Up to ${MAX_FILES} files per upload.`);
   for (const f of files) if (f.size > MAX_FILE) throw new HttpError(413, 'file_too_large', `${f.name} is over 25 MB.`);
@@ -147,8 +147,8 @@ export async function storeFiles(env, orderId, list, kind, userId, thumbs) {
       let thumb = null;
       const t = thumbs && thumbs.get(f.name);
       if (t && t.size > 0 && t.size < 300 * 1024 && /^image\//.test(f.type || '')) thumb = new Uint8Array(await t.arrayBuffer());
-      rows.push(env.DB.prepare('INSERT INTO files (id, order_id, kind, version, r2_key, name, size, type, uploaded_by, created_at, thumb) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-        .bind(id, orderId, kind, version, key, String(f.name || `file${i}`).slice(0, 200), f.size, f.type || null, userId, now(), thumb));
+      rows.push(env.DB.prepare('INSERT INTO files (id, order_id, kind, version, r2_key, name, size, type, uploaded_by, created_at, thumb, released, request_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .bind(id, orderId, kind, version, key, String(f.name || `file${i}`).slice(0, 200), f.size, f.type || null, userId, now(), thumb, opts.released === false ? 0 : 1, opts.requestId || null));
       out.push({ id, name: f.name, size: f.size });
     }
     // write chunk rows in batches of about 6 MB, then all file rows in one batch

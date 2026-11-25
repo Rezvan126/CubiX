@@ -257,7 +257,28 @@ async function run() {
   // preview
   let f = new FormData(); f.append('kind', 'preview'); f.append('files', png(), 'render1.png');
   r = await modeler.post(`/team/orders/${bOrder}/files`, f, { form: true });
-  check('preview upload moves order to preview, version 1', r.status === 201 && r.data.status === 'preview' && r.data.version === 1, r.data);
+  check('modeler preview goes to QC review first, version 1', r.status === 201 && r.data.status === 'review' && r.data.version === 1, r.data);
+  r = await shopB.get('/client/orders/' + bOrder);
+  check('client does not see a preview before QC passes it (status shows as modeling)', r.data.order.status === 'modeling' && !r.data.order.files.some(x => x.kind === 'preview'), { st: r.data.order.status, files: r.data.order.files.map(x => x.kind) });
+  r = await modeler.patch('/team/orders/' + bOrder, { status: 'preview' });
+  check('a modeler cannot pass their own preview', r.status === 403, r.data);
+  r = await modeler.post(`/team/orders/${bOrder}/qc`, { action: 'pass' });
+  check('modelers cannot run QC', r.status === 403, r.status);
+  r = await admin.post(`/team/orders/${bOrder}/qc`, { action: 'back', note: '' });
+  check('sending back needs a note', r.status === 422, r.data);
+  r = await admin.post(`/team/orders/${bOrder}/qc`, { action: 'back', note: 'Roof line is off, check photo 2' });
+  check('QC sends it back to the modeler with an internal note', r.status === 200 && r.data.order.status === 'modeling' && r.data.order.messages.some(m => m.internal && m.body.includes('Roof line')), r.data.order?.status);
+  f = new FormData(); f.append('kind', 'preview'); f.append('files', png(), 'render1b.png');
+  r = await modeler.post(`/team/orders/${bOrder}/files`, f, { form: true });
+  r = await admin.post(`/team/orders/${bOrder}/qc`, { action: 'pass' });
+  check('QC passes the preview to the client', r.status === 200 && r.data.order.status === 'preview' && r.data.order.files.filter(x => x.kind === 'preview').every(x => x.released === 1), r.data.order?.status);
+  r = await shopB.get('/client/orders/' + bOrder);
+  check('client now sees the preview', r.data.order.status === 'preview' && r.data.order.files.some(x => x.kind === 'preview'), r.data.order.status);
+  r = await admin.post(`/team/orders/${bOrder}/qc`, { action: 'pass' });
+  check('QC only works on orders in review', r.status === 409, r.status);
+  r = await shopB.post(`/client/orders/${bOrder}/seen`);
+  r = await admin.get('/team/orders/' + bOrder);
+  check('team sees that the client opened the preview', !!r.data.order.preview_seen_at, r.data.order.preview_seen_at);
   f = new FormData(); f.append('kind', 'final');
   r = await modeler.post(`/team/orders/${bOrder}/files`, f, { form: true });
   check('upload with no files refused', r.status === 422, r.data);
@@ -274,7 +295,9 @@ async function run() {
   check('order is in revisions, counter 1', r.data.order.status === 'revisions' && r.data.order.revisions === 1, r.data.order.status);
   f = new FormData(); f.append('kind', 'preview'); f.append('files', png(), 'render2.png');
   r = await modeler.post(`/team/orders/${bOrder}/files`, f, { form: true });
-  check('second preview is version 2', r.data.version === 2 && r.data.status === 'preview', r.data);
+  check('second preview is version 3 and waits for QC', r.data.version === 3 && r.data.status === 'review', r.data);
+  r = await admin.patch('/team/orders/' + bOrder, { status: 'preview' });
+  check('admin can also pass QC by moving the card to Preview sent', r.status === 200 && r.data.order.status === 'preview', r.data.order?.status);
   r = await admin.patch('/team/orders/' + bOrder, { paid: true });
   check('cannot mark paid before the client approves', r.status === 409, r.data);
   r = await shopB.post(`/client/orders/${bOrder}/approve`);
@@ -292,7 +315,7 @@ async function run() {
   r = await shopB.get('/files/' + finals[0].id);
   check('client downloads final STL', r.status === 200 && r.data.byteLength > 0, r.status);
   r = await shopB.get('/client/orders');
-  check('client list shows preview and final counts', r.data.orders[0].previews === 2 && r.data.orders[0].finals === 2, r.data.orders[0]);
+  check('client list shows preview and final counts', r.data.orders[0].previews === 3 && r.data.orders[0].finals === 2, r.data.orders[0]);
 
   // payment (free order still can be marked paid / price 0; set a price on shop A order)
   r = await admin.patch('/team/orders/' + bOrder, { price: -5 });
@@ -382,6 +405,100 @@ async function run() {
     r = await admin.get('/team/shops/' + invShop);
     check('invited shop shows an active login', r.data.users[0].has_login === 1, r.data.users);
   }
+
+  // ---------------- production control: multi model orders, ship by, Job Bank, waiting on client
+  r = await shopA.post('/client/orders', orderForm({ title: 'Street of houses', product: 'House replica', items: '3', ship_by: 'not a date' }), { form: true });
+  check('a bad ship by date is refused', r.status === 422, r.data);
+  const shipBy = new Date(Date.now() + 5 * 86400e3).toISOString().slice(0, 10);
+  r = await shopA.post('/client/orders', orderForm({ title: 'Street of houses', product: 'House replica', items: '3', ship_by: shipBy }), { form: true });
+  check('one order with 3 models becomes 3 linked jobs', r.status === 201 && r.data.codes.length === 3, r.data);
+  const streetCodes = r.data.codes;
+  r = await shopA.get('/client/orders/' + r.data.id);
+  check('each linked job knows its siblings, ship by date and shares the photos', r.data.order.siblings.length === 3 && r.data.order.item_count === 3 && r.data.order.ship_by.startsWith(shipBy) && r.data.order.files.length === 1 && r.data.order.title.endsWith('(1 of 3)'), r.data.order);
+  const street2 = (await admin.get('/team/orders?q=' + streetCodes[1])).data.orders[0];
+  check('sibling jobs have the same photos without copying them', street2.file_count === 1 && street2.item_no === 2, street2);
+  check('jobs get a hand in time before the client due time', new Date(street2.handin_at) < new Date(street2.due_at), { h: street2.handin_at, d: street2.due_at });
+  r = await anon.post('/order', orderForm({ name: 'Rush Shop', email: em('rush'), product: 'Sign', priority: 'rush' }), { csrf: false, form: true });
+  const rushCode = r.data.id;
+  await admin.patch('/team/members/' + mod1, { capacity: 1 });
+  r = await modeler.post('/team/jobs/next');
+  check('Job Bank hands out the most urgent job first (rush)', r.status === 200 && r.data.order && r.data.order.code === rushCode, r.data);
+  const rushId = r.data.order.id;
+  r = await modeler.post('/team/jobs/next');
+  check('Job Bank stops at the modeler capacity', r.status === 409 && r.data.error === 'at_capacity', r.data);
+  await admin.patch('/team/members/' + mod1, { capacity: 4 });
+  r = await modeler.get('/team/orders/' + rushId);
+  check('the taken job is assigned and confirmed', r.data.order.assignee_id === mod1 && r.data.order.status === 'confirmed', r.data.order.status);
+  r = await shopA.get('/client/orders');
+  r = await modeler.post(`/team/orders/${rushId}/ask`, { body: '' });
+  check('asking the client needs a question', r.status === 422, r.data);
+  r = await modeler.post(`/team/orders/${rushId}/ask`, { body: 'Can you send a photo of the back of the sign?' });
+  check('waiting on client pauses the job', r.status === 200 && r.data.order.status === 'waiting' && !!r.data.order.paused_at, r.data.order?.status);
+  const dueBefore = r.data.order.due_at;
+  r = await admin.get('/team/overview');
+  check('overview counts jobs waiting on clients and they are not overdue', r.data.waiting === 1, r.data.waiting);
+  r = await modeler.patch('/team/orders/' + rushId, { status: 'waiting' });
+  check('waiting cannot be set by dragging, only by asking', r.status === 200 && r.data.unchanged || r.status === 422, r.data);
+  await new Promise(res => setTimeout(res, 1100));
+  {
+    const rushShop = new Client(); // the website customer gets a login through an admin link
+    const shops = (await admin.get('/team/shops')).data.shops; const rs = shops.find(x => x.email === em('rush'));
+    const uid0 = (await admin.get('/team/shops/' + rs.id)).data.users[0].id;
+    const lk = (await admin.post(`/team/users/${uid0}/link`)).data.link;
+    await rushShop.post('/auth/setup', { token: lk.split('/').pop(), password: 'rushpass123' });
+    r = await rushShop.get('/client/orders/' + rushId);
+    check('client sees that we are waiting for them', r.data.order.status === 'waiting' && r.data.order.messages.some(m => m.body.includes('back of the sign')), r.data.order.status);
+    r = await rushShop.post(`/client/orders/${rushId}/messages`, { body: 'Here it is, sending now' });
+    r = await modeler.get('/team/orders/' + rushId);
+    check('the client answer resumes the job and moves the deadline by the pause', r.data.order.status === 'confirmed' && !r.data.order.paused_at && new Date(r.data.order.due_at) > new Date(dueBefore), { st: r.data.order.status, d0: dueBefore, d1: r.data.order.due_at });
+    r = await modeler.get('/team/orders?q=' + rushCode);
+    check('a new client message shows as unread for the team', r.data.orders[0].unread === 1, r.data.orders[0].unread);
+    await modeler.post(`/team/orders/${rushId}/seen`);
+    r = await modeler.get('/team/orders?q=' + rushCode);
+    check('"Got it" clears the unread flag', r.data.orders[0].unread === 0, r.data.orders[0].unread);
+  }
+  // ---------------- revision rounds with pins
+  {
+    const sid = (await admin.get('/team/orders?q=' + streetCodes[0])).data.orders[0].id;
+    let f = new FormData(); f.append('kind', 'preview'); f.append('files', new Blob(['solid t\nendsolid t'], { type: 'model/stl' }), 'house-r1.stl');
+    r = await admin.post(`/team/orders/${sid}/files`, f, { form: true });
+    check('an admin preview skips QC and goes straight to the client', r.data.status === 'preview', r.data);
+    const modelId = (await shopA.get('/client/orders/' + sid)).data.order.files.find(x => x.kind === 'preview').id;
+    r = await shopA.post(`/client/orders/${sid}/revision`, { body: 'Fix these two spots', pins: [{ p: [1, 2, 'x'], note: 'bad' }] });
+    check('pins need a valid position', r.status === 422, r.data);
+    f = new FormData(); f.append('body', 'Fix these two spots'); f.append('model_file', modelId);
+    f.append('pins', JSON.stringify([{ p: [1.23456, 2, 3], note: 'Chimney is too tall' }, { p: [0, 0, 1], note: 'Door should be red' }]));
+    f.append('files', png(), 'door-closeup.png');
+    r = await shopA.post(`/client/orders/${sid}/revision`, f, { form: true });
+    check('client asks for changes with pins and a photo: round 2', r.status === 200 && r.data.round === 2, r.data);
+    r = await modeler.get('/team/orders/' + sid);
+    const rq = r.data.order.requests[0];
+    check('team sees the round, the pins and the attached photo', r.data.order.round === 2 && rq.round === 2 && rq.pins.length === 2 && rq.pins[0].p[0] === 1.235 && rq.pins[1].note === 'Door should be red' && rq.model_file === modelId && r.data.order.files.some(x => x.request_id === rq.id), rq);
+    check('revision moves the hand in time with the new deadline', new Date(r.data.order.handin_at) < new Date(r.data.order.due_at), r.data.order.handin_at);
+  }
+  // ---------------- build rules
+  r = await modeler.post('/team/rules', { title: 'x', body: 'y' });
+  check('modelers cannot write rules', r.status === 403, r.status);
+  r = await admin.post('/team/rules', { scope: 'product', product: 'House replica', title: 'Hollow body', body: 'Hollow, 2 mm walls, open underneath, every window cut through.' });
+  check('admin adds a handbook rule for a product', r.status === 201, r.data);
+  const ruleId = r.data.id;
+  r = await admin.post('/team/rules', { scope: 'shop', shop_id: shopARow.id, title: 'Emma likes', body: 'Always add a 3 mm base plate with the house number.' });
+  check('admin adds a rule for one shop', r.status === 201, r.data);
+  r = await admin.post('/team/rules', { scope: 'shop', shop_id: 's_nope', title: 'x', body: 'y' });
+  check('shop rules need a real shop', r.status === 422, r.data);
+  {
+    const sid = (await admin.get('/team/orders?q=' + streetCodes[2])).data.orders[0].id;
+    r = await modeler.get('/team/orders/' + sid);
+    check('every job shows the product rule and the shop rule', r.data.order.rules.length === 2 && r.data.order.rules.some(x => x.title === 'Hollow body') && r.data.order.rules.some(x => x.scope === 'shop'), r.data.order.rules);
+    r = await shopA.get('/client/orders/' + sid);
+    check('clients do not see the internal rules', !('rules' in r.data.order), Object.keys(r.data.order));
+  }
+  r = await modeler.get('/team/rules');
+  check('handbook lists product rules for everyone on the team', r.data.rules.length === 1 && r.data.products.includes('House replica'), r.data);
+  r = await admin.patch('/team/rules/' + ruleId, { body: 'Hollow, 2.4 mm walls.' });
+  check('admin updates a rule', r.status === 200 && (await modeler.get('/team/rules')).data.rules[0].body === 'Hollow, 2.4 mm walls.', r.data);
+  await admin.post(`/team/rules/${ruleId}/delete`);
+  check('admin deletes a rule', (await modeler.get('/team/rules')).data.rules.length === 0);
 
   // ---------------- invoices
   r = await modeler.get('/team/invoices');

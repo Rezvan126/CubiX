@@ -99,7 +99,7 @@
     stopTimer();
     S.timer = setInterval(() => {
       const r = CX.route();
-      if (document.hidden || $('.modal') || (document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName))) return;
+      if (document.hidden || $('.modal') || $('#prev3d canvas') || (document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName))) return;
       if ((r.parts[0] || '') === '') viewList($('#main'), true).catch(() => {});
       else if (r.parts[0] === 'orders' && r.parts[1]) viewOrder($('#main'), r.parts[1], true).catch(() => {});
     }, 45000);
@@ -144,6 +144,8 @@
         <div class="field"><span>Type</span><div class="chips-input">${PRODUCTS.map((p, i) => `<label><input type="radio" name="product" value="${p}" ${i === 0 ? 'checked' : ''}><span>${p}</span></label>`).join('')}</div></div>
         <div class="grid2"><label class="field"><span>Print size</span><input class="input" name="size" placeholder="15 cm wide"></label><label class="field"><span>Printer</span><input class="input" name="printer" placeholder="Bambu Lab X1C, resin, FDM"></label></div>
         <div class="field"><span>File formats</span><div class="chips-input">${FORMATS.map((f, i) => `<label><input type="checkbox" name="formats" value="${f}" ${i < 2 ? 'checked' : ''}><span>${f}</span></label>`).join('')}</div></div>
+        <div class="grid2"><label class="field"><span>How many separate models?</span><select class="input" name="items">${[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(n => `<option value="${n}">${n === 1 ? '1 model' : n + ' models, same photos'}</option>`).join('')}</select><small>For example 3 houses on one street. Each one becomes its own job.</small></label>
+          <label class="field"><span>Your ship by date (optional)</span><input class="input" type="date" name="ship_by" min="${new Date().toISOString().slice(0, 10)}"><small>From your Etsy order, so we can flag anything at risk.</small></label></div>
         <div class="field"><span>Turnaround</span><div class="chips-input"><label><input type="radio" name="priority" value="normal" checked><span>Standard, within 48 hours</span></label><label><input type="radio" name="priority" value="rush"><span>Rush, within 24 hours</span></label></div></div>
         <label class="field"><span>Notes</span><textarea class="input" name="notes" maxlength="4000" placeholder="Colors, details to keep, things to leave out, base or no base, split into parts for multicolor"></textarea></label>
         <div class="field"><span>Photos and files</span><div id="dz"></div></div>
@@ -181,17 +183,24 @@
 
   // ---------------------------------------------------------------- order detail
   const STEPS = ['Received', 'Modeling', 'Preview', 'Approved', 'Files ready'];
-  const stepOf = s => ({ new: 0, confirmed: 0, modeling: 1, preview: 2, revisions: 1, approved: 3, delivered: 4, paid: 5 })[s] ?? 0;
+  const stepOf = s => ({ new: 0, confirmed: 0, modeling: 1, waiting: 1, review: 1, preview: 2, revisions: 1, approved: 3, delivered: 4, paid: 5 })[s] ?? 0;
   async function viewOrder(main, id, quiet) {
     const { order: o } = await get('/client/orders/' + id);
+    if (S.pv) { S.pv.destroy(); S.pv = null; }
     if (quiet && (CX.route().parts[1] !== id)) return;
     const step = stepOf(o.status);
     const latest = kind => { const fs = o.files.filter(f => f.kind === kind); const v = Math.max(0, ...fs.map(f => f.version)); return { v, list: fs.filter(f => f.version === v), all: fs }; };
-    const prev = latest('preview'), fin = latest('final'), refs = o.files.filter(f => f.kind === 'reference');
+    const prev = latest('preview'), fin = latest('final'), refs = o.files.filter(f => f.kind === 'reference' && !f.request_id);
+    const previewModel = prev.list.find(f => CX.isModel(f.name));
+    if (o.status === 'preview' && !quiet) post(`/client/orders/${o.id}/seen`).catch(() => {});
+    const lastAsk = [...o.messages].reverse().find(m => m.author_role !== 'client');
     const tile = f => `<a class="file" href="${CX.fileUrl(f.id)}" title="Download ${esc(f.name)}"><span class="fprev">${CX.isImg(f) ? `<img src="${CX.thumbUrl(f.id)}" alt="" loading="lazy">` : esc(CX.ext(f.name))}</span><span class="fname">${esc(f.name)}</span></a>`;
     let action = '';
     if (o.status === 'preview') action = `<div class="actionbox"><h3>Your preview is ready</h3><p class="small">Check the renders below. Approve to get your print ready files, or tell us what to change.</p>
         <div class="row wrap"><button class="btn btn-primary" id="approve">${icon('check')} Approve preview</button><button class="btn btn-line" id="changes">${icon('refresh')} Ask for changes</button></div></div>`;
+    else if (o.status === 'waiting') action = `<div class="actionbox"><h3>We need one thing from you</h3>${lastAsk ? `<p style="white-space:pre-wrap">${esc(lastAsk.body)}</p>` : ''}
+        <p class="small">Your turnaround clock is paused until you answer, so you lose no time. Reply below or add files.</p>
+        <div class="row wrap"><button class="btn btn-primary" id="replyNow">${icon('chat')} Reply</button><button class="btn btn-line" id="addFiles2">${icon('upload')} Add photos or files</button></div></div>`;
     else if (o.status === 'revisions') action = `<div class="actionbox" style="border-color:var(--line-2);background:#fff"><h3>We are making your changes</h3><p class="small">A new preview will be here by ${dateTime(o.due_at)}. Add anything else in the conversation below.</p></div>`;
     else if (o.status === 'approved') action = `<div class="actionbox done"><h3>Approved. Preparing your files.</h3><p class="small">We are exporting print ready files now. You will see them here shortly.</p></div>`;
     else if (o.status === 'delivered' || o.status === 'paid') action = `<div class="actionbox done"><h3>${icon('check')} Your files are ready</h3><p class="small">${fin.list.length} file${fin.list.length === 1 ? '' : 's'}, version ${fin.v}. Something not printing right? Tell us below and we fix it.</p>
@@ -201,10 +210,12 @@
     else action = `<div class="actionbox" style="border-color:var(--line-2);background:#fff"><h3>${o.status === 'modeling' ? 'A modeler is working on it' : 'We have your order'}</h3><p class="small">Your preview will be here by <b>${dateTime(o.due_at)}</b>. We will email you when it is ready.</p></div>`;
 
     main.innerHTML = `<a class="back" href="#/">${icon('arrow')} My orders</a>
-      <div class="top"><div><div class="row wrap" style="gap:8px;margin-bottom:6px"><span class="code">${esc(o.code)}</span>${cpill(o.status)}${o.is_free ? '<span class="tag tag-free">Free model</span>' : ''}${o.priority === 'rush' ? '<span class="tag tag-rush">Rush</span>' : ''}</div><h1>${esc(o.title)}</h1></div></div>
+      <div class="top"><div><div class="row wrap" style="gap:8px;margin-bottom:6px"><span class="code">${esc(o.code)}</span>${cpill(o.status)}${o.is_free ? '<span class="tag tag-free">Free model</span>' : ''}${o.priority === 'rush' ? '<span class="tag tag-rush">Rush</span>' : ''}</div><h1>${esc(o.title)}</h1>
+        ${o.siblings && o.siblings.length > 1 ? `<div class="siblings" style="margin-top:10px">${o.siblings.map(x => `<a href="#/orders/${x.id}" ${x.id === o.id ? 'aria-current="true"' : ''}>Model ${x.item_no}</a>`).join('')}</div>` : ''}</div></div>
       <section class="card card-pad" style="margin-bottom:18px">${o.status === 'cancelled' ? '<p class="muted">Cancelled</p>' : `<div class="steps">${STEPS.map((s, i) => `<div class="${i < step || (i === 4 && step >= 4) ? 'done' : i === step ? 'now' : ''}"><i>${i < step || (i === 4 && step >= 4) ? icon('check') : i + 1}</i>${s}</div>`).join('')}</div>`}</section>
       <div class="cgrid"><div style="display:grid;gap:18px;min-width:0">
         ${action}
+        ${previewModel ? `<section class="card"><div class="card-head"><h3>Your model in 3D${prev.v > 1 ? `, version ${prev.v}` : ''}</h3><span class="small muted">Drag to turn it</span></div><div style="padding:14px 16px 16px"><div id="prev3d"></div></div></section>` : ''}
         ${prev.list.length ? `<section class="card"><div class="card-head"><h3>Preview${prev.v > 1 ? `, version ${prev.v}` : ''}</h3><span class="small muted">Click to open full size</span></div>
           <div class="gallery">${prev.list.map(f => CX.isImg(f) ? `<a href="${CX.fileUrl(f.id, 1)}" target="_blank" rel="noopener" aria-label="Open ${esc(f.name)}"><img src="${CX.thumbUrl(f.id)}" alt="Preview ${esc(f.name)}" loading="lazy"></a>` : '').join('')}</div>
           ${prev.list.some(f => !CX.isImg(f)) ? `<div style="padding:0 20px 16px" class="files">${prev.list.filter(f => !CX.isImg(f)).map(tile).join('')}</div>` : ''}
@@ -214,7 +225,7 @@
           <form class="compose" id="compose"><textarea class="input" name="body" placeholder="Write a message to the CubiX team" required maxlength="4000"></textarea><div class="row" style="justify-content:flex-end"><button class="btn btn-dark btn-sm" type="submit">${icon('send')} Send</button></div></form></section>
       </div>
       <aside style="display:grid;gap:18px">
-        <section class="card"><div class="card-head"><h3>Order details</h3></div><dl class="specs" style="grid-template-columns:1fr 1fr">${[['Type', o.product], ['Size', o.size], ['Printer', o.printer], ['Formats', o.formats], ['Ordered', dateTime(o.created_at)], ['Revisions', o.revisions ? String(o.revisions) : '']].filter(x => x[1]).map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join('')}</dl>
+        <section class="card"><div class="card-head"><h3>Order details</h3></div><dl class="specs" style="grid-template-columns:1fr 1fr">${[['Type', o.product], ['Ships by', o.ship_by ? date(o.ship_by) : ''], ['Size', o.size], ['Printer', o.printer], ['Formats', o.formats], ['Ordered', dateTime(o.created_at)], ['Revisions', o.revisions ? String(o.revisions) : '']].filter(x => x[1]).map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join('')}</dl>
           ${o.notes ? `<div class="notes small">${esc(o.notes)}</div>` : ''}</section>
         <section class="card card-pad" style="display:grid;gap:8px"><h3>Payment</h3>${(o.invoices || []).map(i => `<a class="inv-link" href="/invoice/#${esc(i.token)}" target="_blank" rel="noopener"><span>${icon('file')} Invoice ${esc(i.number)}</span><span class="num">${esc(i.currency)} ${CX.amount(i.total)} ${i.status === 'paid' ? '<span class="pill st-delivered plain">Paid</span>' : '<span class="pill st-new plain">Open</span>'}</span></a>`).join('')}${o.is_free ? '<p class="small"><b style="color:var(--ok)">Free.</b> Your first model is on us.</p>' : o.paid ? `<p class="small"><b style="color:var(--ok)">Paid</b>${o.paid_via ? ' via ' + esc(o.paid_via) : ''}. Thank you.</p>` : o.price ? `<p class="small">Price: <b>${money(o.price)}</b>. Pay after approval through Upwork, Fiverr, Payoneer or direct. We send the details.</p>` : '<p class="small muted">We confirm the price before we start. You pay only after you approve the model.</p>'}</section>
         <section class="card"><div class="card-head"><h3>Your files</h3>${['paid', 'cancelled'].includes(o.status) ? '' : `<button class="btn btn-line btn-sm" id="addFiles">${icon('plus')} Add files</button>`}</div><div class="fgroup"><div class="files">${refs.map(tile).join('') || '<p class="small muted">None</p>'}</div>
@@ -238,11 +249,44 @@
       try { await post(`/client/orders/${o.id}/approve`); toast('Approved. Your files are on the way.'); viewOrder(main, o.id); } catch (e) { fail(e); }
     });
     const ch = $('#changes', main);
-    ch && ch.addEventListener('click', () => modal(`<h2>What should we change?</h2><p class="muted small">Be as specific as you can. Point to parts of the model, colors, sizes. You can attach more photos in the conversation by email if needed.</p>
-      <form id="rf" style="display:grid;gap:14px"><textarea class="input" name="body" required maxlength="4000" placeholder="Make the roof darker and add the chimney on the left side" style="min-height:120px"></textarea>
-      <p class="form-msg" role="alert"></p><div class="modal-actions"><button type="button" class="btn btn-line" data-close>Cancel</button><button class="btn btn-primary" type="submit">Send changes</button></div></form>`, (box, close) => {
-      CX.submit($('#rf', box), async d => { if (!d.body.trim()) throw new Error('Tell us what to change.'); await post(`/client/orders/${o.id}/revision`, d); close(); toast('Got it. We are on the changes.'); viewOrder(main, o.id); });
-    }));
+    let prevViewer = null;
+    const p3 = $('#prev3d', main);
+    if (p3 && previewModel) CX.loadViewer().then(m => { prevViewer = S.pv = m.mount(p3, { url: CX.fileUrl(previewModel.id), name: previewModel.name }); }).catch(() => { p3.innerHTML = '<p class="small muted">The 3D view could not load on this device. Download the file instead.</p>'; });
+    const rn = $('#replyNow', main); rn && rn.addEventListener('click', () => { const t = $('#compose textarea', main); t.scrollIntoView({ behavior: 'smooth', block: 'center' }); t.focus(); });
+    const af2 = $('#addFiles2', main); af2 && af2.addEventListener('click', () => $('#moreFiles', main) && $('#moreFiles', main).click());
+    ch && ch.addEventListener('click', () => {
+      let pins = [], viewer = null, dz = null;
+      modal(`<h2>What should we change?</h2><p class="muted small">${previewModel ? 'Click on the model to drop a numbered pin on each spot, and write what to change next to it. ' : ''}Add a note below, and photos if they help.</p>
+      <form id="rf" style="display:grid;gap:14px">
+        ${previewModel ? `<div id="pin3d"></div><ol class="pinlist" id="pinNotes"></ol>` : ''}
+        <label class="field"><span>What to change</span><textarea class="input" name="body" required maxlength="4000" placeholder="Make the roof darker and add the chimney on the left side" style="min-height:100px"></textarea></label>
+        <div class="field"><span>Photos (optional)</span><div id="rdz"></div></div>
+        <p class="form-msg" role="alert"></p><div class="modal-actions"><button type="button" class="btn btn-line" data-close>Cancel</button><button class="btn btn-primary" type="submit">Send changes</button></div></form>`, (box, close) => {
+        box.classList.add('wide');
+        dz = CX.dropzone($('#rdz', box), { hint: 'Close ups or reference photos, up to 25 MB each' });
+        const notes = $('#pinNotes', box);
+        const drawNotes = () => { if (!notes) return; notes.innerHTML = pins.map((p, i) => `<li><button type="button" class="pn" data-pin="${p.n}" aria-label="Show pin ${p.n}">${p.n}</button><input class="input input-sm" data-note="${i}" value="${esc(p.note)}" placeholder="What to change at pin ${p.n}"><button type="button" class="icon-btn" data-rmpin="${i}" aria-label="Remove pin ${p.n}">${icon('x')}</button></li>`).join(''); };
+        if (previewModel) CX.loadViewer().then(m => {
+          viewer = m.mount($('#pin3d', box), { url: CX.fileUrl(previewModel.id), name: previewModel.name, editable: true, onChange: list => { pins = list.map((p, i) => ({ ...p, note: (pins[i] && pins[i].note) || '' })); drawNotes(); const last = notes && notes.querySelector(`[data-note="${pins.length - 1}"]`); last && last.focus(); } });
+        }).catch(() => { $('#pin3d', box).innerHTML = '<p class="small muted">The 3D view could not load. Describe the changes below instead.</p>'; });
+        notes && notes.addEventListener('input', e => { const i = e.target.dataset.note; if (i !== undefined) pins[+i].note = e.target.value; });
+        notes && notes.addEventListener('click', e => {
+          const rm = e.target.closest('[data-rmpin]'); if (rm) { pins.splice(+rm.dataset.rmpin, 1); pins = pins.map((p, i) => ({ ...p, n: i + 1 })); viewer && viewer.setPins(pins); drawNotes(); }
+          const pb = e.target.closest('[data-pin]'); if (pb && viewer) viewer.focusPin(+pb.dataset.pin);
+        });
+        const obs = new MutationObserver(() => { if (!document.body.contains(box)) { obs.disconnect(); viewer && viewer.destroy(); } });
+        obs.observe(document.body, { childList: true });
+        CX.submit($('#rf', box), async d => {
+          if (!d.body.trim() && !pins.length) throw new Error('Tell us what to change, or drop a pin on the model.');
+          const fd = new FormData();
+          fd.set('body', d.body.trim() || pins.map(p => `Pin ${p.n}: ${p.note || 'see pin'}`).join('\n'));
+          fd.set('pins', JSON.stringify(pins)); if (previewModel) fd.set('model_file', previewModel.id);
+          const photos = dz.files(); photos.forEach(f => fd.append('files', f, f.name)); await CX.addThumbs(fd, photos);
+          const r = await CX.upload(`/client/orders/${o.id}/revision`, fd);
+          close(); toast(`Got it. Round ${r.round} is on its way.`); viewOrder(main, o.id);
+        });
+      });
+    });
     CX.submit($('#compose', main), async d => { if (!d.body.trim()) throw new Error('Write a message first.'); await post(`/client/orders/${o.id}/messages`, d); toast('Message sent'); viewOrder(main, o.id); });
   }
 

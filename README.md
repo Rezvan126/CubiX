@@ -91,6 +91,29 @@ Everything below is under **Settings** in the dashboard (admins only).
 
 Migrations to run on the live database: `migrations/0002_invoices_thumbs_settings.sql`, `migrations/0003_sources_paylinks.sql`.
 
+### Production control, revisions and rules
+- **Job Bank:** modelers press **Take next job** on the overview or the board. They get the most urgent unassigned order (rush first, then the earliest hand-in time). It stops at their capacity ("You hold 3 of 4"). Admins can still assign by hand.
+- **Hand-in time:** every job has a team deadline 6 hours before the client's due time (or a quarter of a short window), which leaves room for QC. A live countdown shows on cards and in the order panel.
+- **QC:**
+  - A modeler's preview goes to **In review** and stays hidden from the client.
+  - An admin opens it and clicks **Pass and send to the client** (which emails the client) or **Send back to the modeler** with a note.
+  - Admins' own previews go straight out. QC can be switched off with the `qc_enabled` setting.
+- **Waiting on client:** **Ask the client** sends the question (portal and email) and pauses the clock. When the client replies or adds files, the job resumes by itself and the deadlines move by the time spent waiting. Waiting jobs never count as late.
+- **3D previews with pins:**
+  - STL, 3MF, OBJ and GLB previews open in a 3D viewer in the portal and the dashboard.
+  - When asking for changes, the client clicks the model to drop numbered pins with a note each, and can attach photos.
+  - The team sees **What to change, round N** with the model, the pins, the client's words, the photos, a "Start from the last round" download and earlier requests.
+- **Receipts:** the board shows whether the client has opened a preview ("Seen" or "Not opened yet"). New client messages or changes show a dot and a **Got it** banner until someone acknowledges them.
+- **Build rules:**
+  - The **Handbook** holds standing rules per product (or "All").
+  - Each shop's window holds rules for that shop.
+  - Matching rules show as "This job must have" at the top of every job. Clients never see them.
+- **Ship-by date and multi-model orders:**
+  - The order form asks for the shop's Etsy ship-by date. Jobs show "Ship date at risk" when it's less than 2 days after our due time, or less than 2 days away and files aren't delivered yet.
+  - "How many separate models?" turns one order into linked jobs ("2 of 3") that share the same photos.
+
+Run `migrations/0004_production_revisions_rules.sql` on the live database before deploying this version.
+
 ### Speed
 - Reads come from the nearest database copy (D1 read replication, with a bookmark per browser so people always see their own changes).
 - Each page needs one or two database trips.
@@ -114,7 +137,7 @@ This starts a fresh local database and the server on http://localhost:8788. Firs
 ```bash
 npm run test:api
 ```
-That runs 198 checks on accounts, permissions, the order lifecycle, files, payments and capacity. For the full browser test (132 checks, desktop and phone, screenshots in `tests/shots/`), first run `./tests/fresh.sh` again, then:
+That runs 238 checks on accounts, permissions, the order lifecycle, files, payments and capacity. For the full browser test (155 checks, desktop and phone, screenshots in `tests/shots/`), first run `./tests/fresh.sh` again, then:
 
 ```bash
 npm run test:e2e

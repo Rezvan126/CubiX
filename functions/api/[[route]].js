@@ -68,6 +68,43 @@ async function rateLimit(env, request, what, max, minutes) {
   if (r[0].results[0].n >= max) throw new HttpError(429, 'slow_down', 'Too many requests from your connection. Please wait a little and try again, or email us.');
 }
 
+// The client never sees the internal QC step: "review" shows as "modeling" in the portal.
+const clientStatus = st => st === 'review' ? 'modeling' : st;
+// Leave "waiting on client": the clock restarts and the deadlines move by the time spent waiting.
+function resumeStatements(env, o, userId, at) {
+  if (o.status !== 'waiting') return [];
+  const paused = Math.max(0, new Date(at) - new Date(o.paused_at || at));
+  const shift = iso => iso ? new Date(new Date(iso).getTime() + paused).toISOString() : iso;
+  const back = o.wait_from && !['waiting', 'new'].includes(o.wait_from) ? o.wait_from : 'modeling';
+  return [
+    env.DB.prepare('UPDATE orders SET status = ?, due_at = ?, handin_at = ?, paused_at = NULL, wait_from = NULL, updated_at = ? WHERE id = ?').bind(back, shift(o.due_at), shift(o.handin_at), at, o.id),
+    env.DB.prepare('INSERT INTO events (order_id, user_id, type, detail, created_at) VALUES (?, ?, ?, ?, ?)').bind(o.id, userId, 'status', `waiting to ${back}`, at),
+    env.DB.prepare('INSERT INTO events (order_id, user_id, type, detail, created_at) VALUES (?, ?, ?, ?, ?)').bind(o.id, userId, 'resumed', `Clock resumed, deadline moved by ${Math.round(paused / 60000)} min`, at),
+  ];
+}
+// Send previews that passed QC to the client.
+async function releasePreview(env, request, o, userId, at) {
+  const r = await env.DB.batch([
+    env.DB.prepare("SELECT COUNT(*) AS n, MAX(version) AS v FROM files WHERE order_id = ? AND kind = 'preview' AND released = 0").bind(o.id),
+    env.DB.prepare("UPDATE files SET released = 1 WHERE order_id = ? AND kind = 'preview' AND released = 0").bind(o.id),
+    env.DB.prepare("UPDATE orders SET status = 'preview', preview_seen_at = NULL, updated_at = ? WHERE id = ?").bind(at, o.id),
+    env.DB.prepare('INSERT INTO events (order_id, user_id, type, detail, created_at) VALUES (?, ?, ?, ?, ?)').bind(o.id, userId, 'qc', 'Passed QC, preview sent to the client', at),
+    ...(o.status !== 'preview' ? [env.DB.prepare('INSERT INTO events (order_id, user_id, type, detail, created_at) VALUES (?, ?, ?, ?, ?)').bind(o.id, userId, 'status', `${o.status} to preview`, at)] : []),
+  ]);
+  const version = r[0].results[0].v;
+  const c = await one(env, 'SELECT email, name FROM users WHERE id = ?', o.created_by);
+  if (c) mailClient(env, siteUrl(request, env), c.email, c.name, `Preview ready for ${o.code}`, { heading: 'Your preview is ready', intro: `Have a look at the preview for <b>${escH(o.title)}</b>. Approve it, or tell us what to change. You can rotate the 3D model and pin exactly what to change.`, lines: [['Order', o.code], ...(version ? [['Version', String(version)]] : [])], button: { label: 'Review the preview', url: portalUrl(siteUrl(request, env), o.id) } });
+}
+const parsePins = raw => {
+  let pins = raw; if (typeof pins === 'string') { try { pins = JSON.parse(pins || '[]'); } catch { throw new HttpError(422, 'invalid', 'Pins could not be read.'); } }
+  if (!Array.isArray(pins)) return [];
+  return pins.slice(0, 30).map((p, i) => {
+    const pos = Array.isArray(p && p.p) ? p.p.slice(0, 3).map(Number) : null;
+    if (!pos || pos.length !== 3 || pos.some(n => !isFinite(n))) throw new HttpError(422, 'invalid', 'A pin has no position on the model.');
+    return { n: i + 1, p: pos.map(n => Math.round(n * 1000) / 1000), note: clean(p.note, 300) };
+  });
+};
+
 async function loadOrder(env, id, user) {
   const o = await one(env, `SELECT o.*, s.name AS shop_name, s.url AS shop_url, s.plan AS shop_plan, a.name AS assignee_name
       FROM orders o JOIN shops s ON s.id = o.shop_id LEFT JOIN users a ON a.id = o.assignee_id WHERE o.id = ? OR o.code = ?`, id, id);
@@ -81,59 +118,101 @@ async function orderBundle(env, id, user) {
   const r = await env.DB.batch([
     env.DB.prepare(`SELECT o.*, s.name AS shop_name, s.url AS shop_url, s.plan AS shop_plan, a.name AS assignee_name
       FROM orders o JOIN shops s ON s.id = o.shop_id LEFT JOIN users a ON a.id = o.assignee_id WHERE o.id = ?1 OR o.code = ?1`).bind(id),
-    env.DB.prepare(`SELECT f.id, f.kind, f.version, f.name, f.size, f.type, f.created_at, (f.thumb IS NOT NULL) AS has_thumb FROM files f
-      JOIN orders o ON o.id = f.order_id WHERE o.id = ?1 OR o.code = ?1 ORDER BY f.created_at`).bind(id),
+    env.DB.prepare(`SELECT f.id, f.kind, f.version, f.name, f.size, f.type, f.created_at, f.released, f.request_id, (f.thumb IS NOT NULL) AS has_thumb FROM files f
+      JOIN orders o ON o.id = f.order_id WHERE (o.id = ?1 OR o.code = ?1) ${team ? '' : 'AND f.released = 1'} ORDER BY f.created_at`).bind(id),
     env.DB.prepare(`SELECT m.id, m.body, m.internal, m.created_at, u.name AS author, u.role AS author_role FROM messages m
       JOIN orders o ON o.id = m.order_id LEFT JOIN users u ON u.id = m.user_id WHERE (o.id = ?1 OR o.code = ?1) ${team ? '' : 'AND m.internal = 0'} ORDER BY m.created_at`).bind(id),
     env.DB.prepare(`SELECT e.type, e.detail, e.created_at, u.name AS who FROM events e JOIN orders o ON o.id = e.order_id
       LEFT JOIN users u ON u.id = e.user_id WHERE (o.id = ?1 OR o.code = ?1) ${team ? '' : "AND e.type NOT IN ('assigned','note','price')"} ORDER BY e.id`).bind(id),
     env.DB.prepare(`SELECT i.id, i.number, i.token, i.status, i.total, i.currency, i.issued_at FROM invoices i JOIN orders o ON o.id = i.order_id
       WHERE (o.id = ?1 OR o.code = ?1) ${team ? '' : "AND i.status IN ('sent','paid')"} ORDER BY i.created_at`).bind(id),
+    env.DB.prepare(`SELECT r.id, r.round, r.body, r.pins, r.model_file, r.created_at, u.name AS author FROM requests r JOIN orders o ON o.id = r.order_id
+      LEFT JOIN users u ON u.id = r.created_by WHERE o.id = ?1 OR o.code = ?1 ORDER BY r.round, r.created_at`).bind(id),
+    env.DB.prepare(`SELECT ru.id, ru.scope, ru.product, ru.title, ru.body, ru.updated_at FROM rules ru JOIN orders o ON (o.id = ?1 OR o.code = ?1)
+      WHERE (ru.scope = 'shop' AND ru.shop_id = o.shop_id) OR (ru.scope = 'product' AND (lower(ru.product) = lower(o.product) OR lower(ru.product) = 'all'))
+      ORDER BY ru.scope DESC, ru.title`).bind(id),
+    env.DB.prepare(`SELECT s.id, s.code, s.item_no, s.status, s.assignee_id FROM orders s JOIN orders o ON (o.id = ?1 OR o.code = ?1)
+      WHERE o.group_id IS NOT NULL AND s.group_id = o.group_id ORDER BY s.item_no`).bind(id),
   ]);
   const o = r[0].results[0];
   if (!o || (!team && o.shop_id !== user.shop_id)) throw new HttpError(404, 'not_found', 'Order not found.');
-  const out = { ...o, files: r[1].results, messages: r[2].results, events: r[3].results, invoices: r[4].results };
-  if (!team) { delete out.assignee_id; delete out.assignee_name; }
+  const requests = r[5].results.map(x => ({ ...x, pins: JSON.parse(x.pins || '[]') }));
+  const out = { ...o, files: r[1].results, messages: r[2].results, events: r[3].results, invoices: r[4].results, requests, round: (o.revisions || 0) + 1, siblings: r[7].results };
+  if (team) out.rules = r[6].results;
+  else {
+    for (const k of ['assignee_id', 'assignee_name', 'handin_at', 'wait_from', 'team_seen_at', 'paused_at']) delete out[k];
+    out.status = clientStatus(out.status); out.siblings = out.siblings.map(x => ({ id: x.id, code: x.code, item_no: x.item_no }));
+    out.events = out.events.filter(e => !['qc', 'resumed'].includes(e.type));
+  }
   return out;
 }
 function dueFor(priority, from = now()) { return addHours(from, priority === 'rush' ? 24 : TURNAROUND_HOURS); }
 
+// Team deadline: the client due time minus room for the QC check (6 hours, or a quarter of a short window).
+function handinFor(due, from) {
+  const win = new Date(due) - new Date(from);
+  return new Date(new Date(due).getTime() - Math.min(6 * 3600e3, Math.max(0, win) / 4)).toISOString();
+}
+function parseDay(v) {
+  const t = clean(v, 40); if (!t) return null;
+  const d = new Date(/^\d{4}-\d{2}-\d{2}$/.test(t) ? t + 'T23:59:00.000Z' : t);
+  if (isNaN(d)) throw new HttpError(422, 'invalid', 'Pick a valid ship by date.');
+  return d.toISOString();
+}
+
 async function createOrder(env, { shop, userId, body, files, site, orderer }) {
-  const id = uid('o_'), at = now();
-  const isFree = shop.free_used ? 0 : 1;
+  const at = now();
   const product = clean(field(body, 'product'), 80) || 'Custom model';
-  const title = clean(field(body, 'title'), 120) || product;
+  const baseTitle = clean(field(body, 'title'), 120) || product;
   const formats = body instanceof FormData ? body.getAll('formats').map(x => clean(x, 40)).filter(Boolean).join(', ') : clean(field(body, 'formats'), 200);
   const priority = field(body, 'priority') === 'rush' ? 'rush' : 'normal';
   const source = clean(field(body, 'source'), 120) || null;
-  let code = orderCode();
+  const shipBy = parseDay(field(body, 'ship_by'));
+  const count = Math.max(1, Math.min(10, parseInt(field(body, 'items'), 10) || 1));
+  const due = dueFor(priority, at), handin = handinFor(due, at);
+  const groupId = count > 1 ? uid('g_') : null;
+  const items = Array.from({ length: count }, (_, i) => ({ id: uid('o_'), no: i + 1, free: i === 0 && !shop.free_used ? 1 : 0 }));
+  const codes = items.map(() => orderCode());
   for (let attempt = 0; ; attempt++) {
     try {
       await env.DB.batch([
-        env.DB.prepare(`INSERT INTO orders (id, code, shop_id, created_by, title, product, size, printer, formats, notes, channel, status, priority, is_free, due_at, created_at, updated_at, source)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?, ?, ?, ?, ?)`).bind(id, code, shop.id, userId, title, product, clean(field(body, 'size'), 120),
-          clean(field(body, 'printer'), 120), formats, clean(field(body, 'notes'), 4000), clean(field(body, 'channel'), 40) || 'Direct', priority, isFree, dueFor(priority, at), at, at, source),
+        ...items.map((it, i) => env.DB.prepare(`INSERT INTO orders (id, code, shop_id, created_by, title, product, size, printer, formats, notes, channel, status, priority, is_free, due_at, handin_at, ship_by, group_id, item_no, item_count, created_at, updated_at, source)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(it.id, codes[i], shop.id, userId, count > 1 ? `${baseTitle} (${it.no} of ${count})` : baseTitle, product,
+          clean(field(body, 'size'), 120), clean(field(body, 'printer'), 120), formats, clean(field(body, 'notes'), 4000), clean(field(body, 'channel'), 40) || 'Direct',
+          priority, it.free, due, handin, shipBy, groupId, count > 1 ? it.no : null, count > 1 ? count : null, at, at, source)),
         env.DB.prepare('UPDATE shops SET free_used = 1 WHERE id = ?').bind(shop.id),
-        env.DB.prepare('INSERT INTO events (order_id, user_id, type, detail, created_at) VALUES (?, ?, ?, ?, ?)').bind(id, userId, 'created', isFree ? 'Free first model' : null, at),
+        ...items.map(it => env.DB.prepare('INSERT INTO events (order_id, user_id, type, detail, created_at) VALUES (?, ?, ?, ?, ?)').bind(it.id, userId, 'created', it.free ? 'Free first model' : (count > 1 ? `Model ${it.no} of ${count}` : null), at)),
       ]);
       break;
-    } catch (e) { if (attempt < 3 && /UNIQUE/i.test(String(e && e.message))) { code = orderCode(); continue; } throw e; }
+    } catch (e) { if (attempt < 3 && /UNIQUE/i.test(String(e && e.message))) { for (let i = 0; i < codes.length; i++) codes[i] = orderCode(); continue; } throw e; }
   }
-  try { await storeFiles(env, id, files, 'reference', userId, thumbMap(body)); }
-  catch (e) { await env.DB.batch([env.DB.prepare('DELETE FROM events WHERE order_id = ?').bind(id), env.DB.prepare('DELETE FROM orders WHERE id = ?').bind(id), env.DB.prepare('UPDATE shops SET free_used = ? WHERE id = ?').bind(shop.free_used, shop.id)]); throw e; }
-  const due = dueFor(priority, at);
-  later(env, alertTeam(env, site, { title: `New order ${code}${isFree ? ' (free first model)' : ''}`, text: `${shop.name}: ${title}${priority === 'rush' ? ' (rush)' : ''}${source ? `\nSource: ${source}` : ''}`, url: teamUrl(site, id) }));
+  const ids = items.map(it => it.id);
+  try {
+    await storeFiles(env, ids[0], files, 'reference', userId, thumbMap(body));
+    // the same photos belong to every model of the order: share the stored contents instead of copying them
+    if (ids.length > 1) await env.DB.batch(ids.slice(1).map(oid => env.DB.prepare(`INSERT INTO files (id, order_id, kind, version, r2_key, name, size, type, uploaded_by, created_at, thumb, released)
+      SELECT 'f_' || lower(hex(randomblob(12))), ?, kind, version, r2_key, name, size, type, uploaded_by, created_at, thumb, released FROM files WHERE order_id = ?`).bind(oid, ids[0])));
+  } catch (e) {
+    await env.DB.batch([
+      ...ids.map(oid => env.DB.prepare('DELETE FROM files WHERE order_id = ?').bind(oid)),
+      ...ids.map(oid => env.DB.prepare('DELETE FROM events WHERE order_id = ?').bind(oid)),
+      ...ids.map(oid => env.DB.prepare('DELETE FROM orders WHERE id = ?').bind(oid)),
+      env.DB.prepare('UPDATE shops SET free_used = ? WHERE id = ?').bind(shop.free_used, shop.id)]);
+    throw e;
+  }
+  const isFree = items[0].free, code = codes[0], title = baseTitle;
+  later(env, alertTeam(env, site, { title: `New order ${codes.join(', ')}${isFree ? ' (free first model)' : ''}`, text: `${shop.name}: ${title}${count > 1 ? ` (${count} models)` : ''}${priority === 'rush' ? ' (rush)' : ''}${shipBy ? `\nShips by ${shipBy.slice(0, 10)}` : ''}${source ? `\nSource: ${source}` : ''}`, url: teamUrl(site, ids[0]) }));
   if (orderer && orderer.email) {
-    let button = { label: 'Track your order', url: portalUrl(site, id) };
+    let button = { label: 'Track your order', url: portalUrl(site, ids[0]) };
     if (orderer.needsLogin) { const t = await makeLinkToken(env, orderer.id, 'setup', 24 * 7); button = { label: 'Set a password and track your order', url: `${site}/app/#/setup/${t}` }; }
     mailClient(env, site, orderer.email, orderer.name, `We received your order ${code}`, {
       heading: `Order ${code} received`,
-      intro: `Thank you. Your order is in the queue and a modeler will pick it up shortly. You get a preview by ${new Date(due).toUTCString().slice(0, 22)} UTC at the latest.${isFree ? '<br><br><b>This one is free</b>, your first model is on us.' : ''}`,
-      lines: [['Order', code], ['What', title], ['Turnaround', priority === 'rush' ? 'Rush, within 24 hours' : 'Within 48 hours']],
+      intro: `Thank you. Your order is in the queue and a modeler will pick it up shortly. You get a preview by ${new Date(due).toUTCString().slice(0, 22)} UTC at the latest.${isFree ? '<br><br><b>Your first model is free.</b>' : ''}`,
+      lines: [['Order', codes.join(', ')], ['What', count > 1 ? `${title}, ${count} models` : title], ['Turnaround', priority === 'rush' ? 'Rush, within 24 hours' : 'Within 48 hours'], ...(shipBy ? [['Your ship by date', shipBy.slice(0, 10)]] : [])],
       button, outro: 'Reply to this email or write in your portal if you want to add anything.',
     });
   }
-  return { id, code, free: !!isFree };
+  return { id: ids[0], code, codes, free: !!isFree };
 }
 
 // ---------------------------------------------------------------- auth
@@ -259,12 +338,12 @@ on('POST', '/order', PUBLIC, async ({ request, env }) => {
 
 // ---------------------------------------------------------------- client portal
 on('GET', '/client/orders', CLIENT, async ({ env, user }) => {
-  const orders = await all(env, `SELECT o.id, o.code, o.title, o.product, o.status, o.is_free, o.price, o.paid, o.due_at, o.created_at, o.updated_at,
-      (SELECT COUNT(*) FROM files f WHERE f.order_id = o.id AND f.kind = 'preview') AS previews,
+  const orders = await all(env, `SELECT o.id, o.code, o.title, o.product, o.status, o.is_free, o.price, o.paid, o.due_at, o.ship_by, o.item_no, o.item_count, o.created_at, o.updated_at,
+      (SELECT COUNT(*) FROM files f WHERE f.order_id = o.id AND f.kind = 'preview' AND f.released = 1) AS previews,
       (SELECT COUNT(*) FROM files f WHERE f.order_id = o.id AND f.kind = 'final') AS finals,
-      (SELECT f.id FROM files f WHERE f.order_id = o.id AND f.kind IN ('preview','reference') AND f.type LIKE 'image/%' ORDER BY (f.kind = 'preview') DESC, f.created_at DESC LIMIT 1) AS thumb
+      (SELECT f.id FROM files f WHERE f.order_id = o.id AND f.kind IN ('preview','reference') AND f.released = 1 AND f.type LIKE 'image/%' ORDER BY (f.kind = 'preview') DESC, f.created_at DESC LIMIT 1) AS thumb
       FROM orders o WHERE o.shop_id = ? ORDER BY o.created_at DESC`, user.shop_id);
-  return json({ ok: true, orders });
+  return json({ ok: true, orders: orders.map(o => ({ ...o, status: clientStatus(o.status) })) });
 });
 on('POST', '/client/orders', CLIENT, async ({ request, env, user }) => {
   const b = await readBody(request);
@@ -279,11 +358,13 @@ on('GET', '/client/orders/:id', CLIENT, async ({ env, params, user }) => json({ 
 on('POST', '/client/orders/:id/messages', CLIENT, async ({ request, env, params, user }) => {
   const o = await loadOrder(env, params.id, user); const b = await readBody(request);
   const body = clean(field(b, 'body'), 4000); if (!body) throw new HttpError(422, 'invalid', 'Write a message first.');
+  const at = now();
   await env.DB.batch([
-    env.DB.prepare('INSERT INTO messages (id, order_id, user_id, body, internal, created_at) VALUES (?, ?, ?, ?, 0, ?)').bind(uid('m_'), o.id, user.id, body, now()),
-    env.DB.prepare('UPDATE orders SET updated_at = ? WHERE id = ?').bind(now(), o.id),
+    env.DB.prepare('INSERT INTO messages (id, order_id, user_id, body, internal, created_at) VALUES (?, ?, ?, ?, 0, ?)').bind(uid('m_'), o.id, user.id, body, at),
+    env.DB.prepare('UPDATE orders SET updated_at = ?, client_msg_at = ? WHERE id = ?').bind(at, at, o.id),
+    ...resumeStatements(env, o, user.id, at),
   ]);
-  later(env, alertTeam(env, siteUrl(request, env), { title: `Message on ${o.code}`, text: `${o.shop_name}: ${body.slice(0, 400)}`, url: teamUrl(siteUrl(request, env), o.id) }));
+  later(env, alertTeam(env, siteUrl(request, env), { title: o.status === 'waiting' ? `${o.code}: the client answered, clock running again` : `Message on ${o.code}`, text: `${o.shop_name}: ${body.slice(0, 400)}`, url: teamUrl(siteUrl(request, env), o.id) }));
   return json({ ok: true }, 201);
 });
 on('POST', '/client/orders/:id/files', CLIENT, async ({ request, env, params, user }) => {
@@ -293,9 +374,11 @@ on('POST', '/client/orders/:id/files', CLIENT, async ({ request, env, params, us
   const files = b.getAll('files');
   if (!files.some(f => typeof f === 'object' && f.size > 0)) throw new HttpError(422, 'no_files', 'Choose at least one file.');
   const r = await storeFiles(env, o.id, files, 'reference', user.id, thumbMap(b));
+  const at = now();
   await env.DB.batch([
-    env.DB.prepare('UPDATE orders SET updated_at = ? WHERE id = ?').bind(now(), o.id),
-    env.DB.prepare('INSERT INTO events (order_id, user_id, type, detail, created_at) VALUES (?, ?, ?, ?, ?)').bind(o.id, user.id, 'files', `Shop added ${r.files.length} file(s)`, now()),
+    env.DB.prepare('UPDATE orders SET updated_at = ?, client_msg_at = ? WHERE id = ?').bind(at, at, o.id),
+    env.DB.prepare('INSERT INTO events (order_id, user_id, type, detail, created_at) VALUES (?, ?, ?, ?, ?)').bind(o.id, user.id, 'files', `Shop added ${r.files.length} file(s)`, at),
+    ...resumeStatements(env, o, user.id, at),
   ]);
   later(env, alertTeam(env, siteUrl(request, env), { title: `New files on ${o.code}`, text: `${o.shop_name} added ${r.files.length} file(s).`, url: teamUrl(siteUrl(request, env), o.id) }));
   return json({ ok: true, files: r.files }, 201);
@@ -305,7 +388,7 @@ on('POST', '/client/orders/:id/approve', CLIENT, async ({ request, env, params, 
   if (!['preview', 'delivered'].includes(o.status)) throw new HttpError(409, 'bad_state', 'There is nothing to approve yet.');
   const status = o.status === 'preview' ? 'approved' : 'delivered';
   await env.DB.batch([
-    env.DB.prepare('UPDATE orders SET status = ?, approved_at = ?, updated_at = ? WHERE id = ?').bind(status, now(), now(), o.id),
+    env.DB.prepare('UPDATE orders SET status = ?, approved_at = ?, updated_at = ?, client_msg_at = ? WHERE id = ?').bind(status, now(), now(), now(), o.id),
     env.DB.prepare('INSERT INTO events (order_id, user_id, type, detail, created_at) VALUES (?, ?, ?, NULL, ?)').bind(o.id, user.id, 'approved', now()),
   ]);
   later(env, alertTeam(env, siteUrl(request, env), { title: `${o.code} approved`, text: `${o.shop_name} approved the ${status === 'approved' ? 'preview. Prepare the final files.' : 'delivered files.'}`, url: teamUrl(siteUrl(request, env), o.id) }));
@@ -315,13 +398,26 @@ on('POST', '/client/orders/:id/revision', CLIENT, async ({ request, env, params,
   const o = await loadOrder(env, params.id, user); const b = await readBody(request);
   if (!['preview', 'delivered', 'approved'].includes(o.status)) throw new HttpError(409, 'bad_state', 'Revisions can be asked once a preview is ready.');
   const body = clean(field(b, 'body'), 4000); if (!body) throw new HttpError(422, 'invalid', 'Tell us what to change.');
-  const at = now();
+  const pins = parsePins(field(b, 'pins'));
+  const modelFile = clean(field(b, 'model_file'), 40) || null;
+  const at = now(), round = (o.revisions || 0) + 2, rid = uid('r_');
+  const due = addHours(at, 24);
+  if (b instanceof FormData) {
+    const photos = b.getAll('files');
+    if (photos.some(f => typeof f === 'object' && f.size > 0)) await storeFiles(env, o.id, photos, 'reference', user.id, thumbMap(b), { requestId: rid });
+  }
   await env.DB.batch([
-    env.DB.prepare(`UPDATE orders SET status = 'revisions', revisions = revisions + 1, approved_at = NULL, due_at = ?, updated_at = ? WHERE id = ?`).bind(addHours(at, 24), at, o.id),
-    env.DB.prepare('INSERT INTO messages (id, order_id, user_id, body, internal, created_at) VALUES (?, ?, ?, ?, 0, ?)').bind(uid('m_'), o.id, user.id, 'Revision request: ' + body, at),
-    env.DB.prepare('INSERT INTO events (order_id, user_id, type, detail, created_at) VALUES (?, ?, ?, ?, ?)').bind(o.id, user.id, 'revision', body.slice(0, 200), at),
+    env.DB.prepare(`UPDATE orders SET status = 'revisions', revisions = revisions + 1, approved_at = NULL, due_at = ?, handin_at = ?, updated_at = ?, client_msg_at = ? WHERE id = ?`).bind(due, handinFor(due, at), at, at, o.id),
+    env.DB.prepare('INSERT INTO requests (id, order_id, round, body, pins, model_file, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(rid, o.id, round, body, JSON.stringify(pins), modelFile, user.id, at),
+    env.DB.prepare('INSERT INTO messages (id, order_id, user_id, body, internal, created_at) VALUES (?, ?, ?, ?, 0, ?)').bind(uid('m_'), o.id, user.id, `Revision request for round ${round}: ${body}${pins.length ? `\n(${pins.length} pin${pins.length > 1 ? 's' : ''} on the model)` : ''}`, at),
+    env.DB.prepare('INSERT INTO events (order_id, user_id, type, detail, created_at) VALUES (?, ?, ?, ?, ?)').bind(o.id, user.id, 'revision', `Round ${round}: ${body.slice(0, 160)}`, at),
   ]);
-  later(env, alertTeam(env, siteUrl(request, env), { title: `Changes requested on ${o.code}`, text: `${o.shop_name}: ${body.slice(0, 400)}`, url: teamUrl(siteUrl(request, env), o.id) }));
+  later(env, alertTeam(env, siteUrl(request, env), { title: `Changes requested on ${o.code} (round ${round})`, text: `${o.shop_name}: ${body.slice(0, 400)}${pins.length ? `\n${pins.length} pin(s) on the model` : ''}`, url: teamUrl(siteUrl(request, env), o.id) }));
+  return json({ ok: true, round });
+});
+on('POST', '/client/orders/:id/seen', CLIENT, async ({ env, params, user }) => {
+  const o = await loadOrder(env, params.id, user);
+  if (o.status === 'preview' && !o.preview_seen_at) await env.DB.prepare('UPDATE orders SET preview_seen_at = ? WHERE id = ?').bind(now(), o.id).run();
   return json({ ok: true });
 });
 
@@ -354,35 +450,39 @@ on('GET', '/files/:id/thumb', ANY, async ({ env, params, user }) => {
 // ---------------------------------------------------------------- team dashboard
 on('GET', '/team/overview', TEAM, async ({ env }) => {
   const t = now(), soon = addHours(t, 24), monthStart = t.slice(0, 7) + '-01T00:00:00.000Z';
-  const open = OPEN_STATUSES.filter(s => s !== 'approved');
+  const open = OPEN_STATUSES.filter(s => !['approved', 'waiting', 'preview'].includes(s)); // the clock runs only while we are building
   const ph = open.map(() => '?').join(',');
+  const held = OPEN_STATUSES.filter(s => s !== 'approved'), hph = held.map(() => '?').join(',');
   const q = (sql, ...b) => env.DB.prepare(sql).bind(...b);
   const r = await env.DB.batch([
     q('SELECT status, COUNT(*) AS n FROM orders GROUP BY status'),
     q(`SELECT
         SUM(CASE WHEN status IN (${ph}) AND due_at < ? THEN 1 ELSE 0 END) AS overdue,
         SUM(CASE WHEN status IN (${ph}) AND due_at >= ? AND due_at < ? THEN 1 ELSE 0 END) AS due_soon,
-        SUM(CASE WHEN status IN (${ph}) AND assignee_id IS NULL THEN 1 ELSE 0 END) AS unassigned,
+        SUM(CASE WHEN status IN ('new','confirmed') AND assignee_id IS NULL THEN 1 ELSE 0 END) AS unassigned,
+        SUM(CASE WHEN status = 'review' THEN 1 ELSE 0 END) AS in_review,
+        SUM(CASE WHEN status = 'waiting' THEN 1 ELSE 0 END) AS waiting,
         SUM(CASE WHEN status IN ('delivered','approved') AND paid = 0 AND is_free = 0 THEN 1 ELSE 0 END) AS awaiting_n,
         COALESCE(SUM(CASE WHEN status IN ('delivered','approved') AND paid = 0 AND is_free = 0 THEN price END), 0) AS awaiting_total,
         COALESCE(SUM(CASE WHEN paid = 1 AND updated_at >= ? THEN price END), 0) AS paid_total,
         SUM(CASE WHEN paid = 1 AND updated_at >= ? THEN 1 ELSE 0 END) AS paid_n
-      FROM orders`, ...open, t, ...open, t, soon, ...open, monthStart, monthStart),
+      FROM orders`, ...open, t, ...open, t, soon, monthStart, monthStart),
     q('SELECT COUNT(*) AS n, AVG((julianday(delivered_at) - julianday(created_at)) * 24) AS avg_h FROM orders WHERE delivered_at IS NOT NULL AND delivered_at >= ?', addHours(t, -24 * 30)),
     q(`SELECT u.id, u.name, u.role, u.capacity,
-        (SELECT COUNT(*) FROM orders o WHERE o.assignee_id = u.id AND o.status IN (${ph})) AS open,
+        (SELECT COUNT(*) FROM orders o WHERE o.assignee_id = u.id AND o.status IN (${hph})) AS open,
         (SELECT COUNT(*) FROM orders o WHERE o.assignee_id = u.id AND o.status IN (${ph}) AND o.due_at < ?) AS overdue,
         (SELECT COUNT(*) FROM orders o WHERE o.assignee_id = u.id AND o.delivered_at >= ?) AS delivered_7d
-      FROM users u WHERE u.role IN ('admin','modeler') AND u.active = 1 ORDER BY u.name`, ...open, ...open, t, addHours(t, -24 * 7)),
+      FROM users u WHERE u.role IN ('admin','modeler') AND u.active = 1 ORDER BY u.name`, ...held, ...open, t, addHours(t, -24 * 7)),
     q('SELECT COUNT(*) AS n FROM shops WHERE created_at >= ?', monthStart),
     q("SELECT COALESCE(NULLIF(source, ''), 'Direct') AS source, COUNT(*) AS n FROM orders WHERE created_at >= ? GROUP BY 1 ORDER BY n DESC LIMIT 8", addHours(t, -24 * 30)),
     q('SELECT COALESCE(SUM(size), 0) AS bytes FROM files'),
     q(`SELECT o.id, o.code, o.title, o.status, o.due_at, o.priority, o.is_free, s.name AS shop_name, a.name AS assignee_name
       FROM orders o JOIN shops s ON s.id = o.shop_id LEFT JOIN users a ON a.id = o.assignee_id
-      WHERE o.status IN (${ph}) AND (o.due_at < ? OR o.assignee_id IS NULL OR o.status = 'revisions') ORDER BY o.due_at LIMIT 12`, ...open, soon),
+      WHERE o.status IN (${hph}) AND ((o.status IN (${ph}) AND o.due_at < ?) OR (o.assignee_id IS NULL AND o.status IN ('new','confirmed')) OR o.status IN ('revisions','review')
+        OR (o.client_msg_at IS NOT NULL AND o.client_msg_at > COALESCE(o.team_seen_at, ''))) ORDER BY CASE o.status WHEN 'review' THEN 0 ELSE 1 END, o.due_at LIMIT 15`, ...held, ...open, soon),
   ]);
   const c = r[1].results[0], d = r[2].results[0], team = r[3].results;
-  return json({ ok: true, byStatus: r[0].results, overdue: c.overdue || 0, dueSoon: c.due_soon || 0, unassigned: c.unassigned || 0,
+  return json({ ok: true, byStatus: r[0].results, overdue: c.overdue || 0, dueSoon: c.due_soon || 0, unassigned: c.unassigned || 0, inReview: c.in_review || 0, waiting: c.waiting || 0,
     awaiting: { n: c.awaiting_n || 0, total: c.awaiting_total }, paidMonth: { n: c.paid_n || 0, total: c.paid_total },
     avgHours: d.n ? d.avg_h : null, deliveredLast30: d.n, team, capacity: team.reduce((a, m) => a + m.capacity, 0), load: team.reduce((a, m) => a + m.open, 0),
     newShops: r[4].results[0].n, attention: r[7].results, sources: r[5].results,
@@ -399,12 +499,15 @@ on('GET', '/team/orders', TEAM, async ({ env, url, user }) => {
   else if (assignee === 'none') where.push('o.assignee_id IS NULL');
   else if (assignee) { where.push('o.assignee_id = ?'); b.push(assignee); }
   if (q.get('shop')) { where.push('o.shop_id = ?'); b.push(q.get('shop')); }
-  if (q.get('due') === 'overdue') { where.push(`o.due_at < ? AND o.status IN (${OPEN_STATUSES.filter(s => s !== 'approved').map(() => '?').join(',')})`); b.push(now(), ...OPEN_STATUSES.filter(s => s !== 'approved')); }
+  const running = OPEN_STATUSES.filter(s => !['approved', 'waiting', 'preview'].includes(s));
+  if (q.get('due') === 'overdue') { where.push(`o.due_at < ? AND o.status IN (${running.map(() => '?').join(',')})`); b.push(now(), ...running); }
   if (q.get('unpaid') === '1') where.push("o.paid = 0 AND o.is_free = 0 AND o.status IN ('delivered','approved')");
   const term = clean(q.get('q'), 80);
   if (term) { where.push('(o.code LIKE ? OR o.title LIKE ? OR s.name LIKE ?)'); b.push(`%${term}%`, `%${term}%`, `%${term}%`); }
   const sort = q.get('sort') === 'new' ? 'o.created_at DESC' : "CASE o.priority WHEN 'rush' THEN 0 ELSE 1 END, o.due_at";
   const orders = await all(env, `SELECT o.id, o.code, o.title, o.product, o.status, o.priority, o.is_free, o.price, o.paid, o.paid_via, o.due_at, o.created_at, o.updated_at, o.revisions,
+      o.handin_at, o.ship_by, o.item_no, o.item_count, o.group_id, o.preview_seen_at, o.paused_at,
+      (o.client_msg_at IS NOT NULL AND o.client_msg_at > COALESCE(o.team_seen_at, '')) AS unread,
       o.assignee_id, a.name AS assignee_name, s.id AS shop_id, s.name AS shop_name, s.plan AS shop_plan,
       (SELECT COUNT(*) FROM files f WHERE f.order_id = o.id) AS file_count,
       (SELECT COUNT(*) FROM messages m WHERE m.order_id = o.id) AS message_count,
@@ -422,6 +525,15 @@ on('PATCH', '/team/orders/:id', TEAM, async ({ request, env, params, user }) => 
   if (b.status !== undefined) {
     if (!STATUSES.includes(b.status)) throw new HttpError(422, 'invalid', 'Unknown status.');
     if (b.status === 'paid' && !admin) throw new HttpError(403, 'forbidden', 'Only an admin can mark orders as paid.');
+    if (b.status === 'waiting' && o.status !== 'waiting') throw new HttpError(422, 'invalid', 'Use "Ask the client" so they know what you need.');
+    if (b.status === 'preview' && o.status !== 'preview') {
+      const held = await one(env, "SELECT COUNT(*) AS n FROM files WHERE order_id = ? AND kind = 'preview' AND released = 0", o.id);
+      if (held.n) {
+        if (!admin) throw new HttpError(403, 'forbidden', 'An admin checks previews before they go to the client.');
+        await releasePreview(env, request, o, user.id, now());
+        return json({ ok: true, order: await orderBundle(env, o.id, user) });
+      }
+    }
     if (b.status !== o.status) {
       set.push('status = ?'); vals.push(b.status); events.push(['status', `${o.status} to ${b.status}`]);
       if (b.status === 'delivered' && !o.delivered_at) { set.push('delivered_at = ?'); vals.push(now()); }
@@ -440,12 +552,21 @@ on('PATCH', '/team/orders/:id', TEAM, async ({ request, env, params, user }) => 
     } else events.push(['assigned', 'Unassigned']);
     set.push('assignee_id = ?'); vals.push(target);
   }
+  if (b.ship_by !== undefined) { set.push('ship_by = ?'); vals.push(parseDay(b.ship_by)); events.push(['ship_by', `Ship by ${b.ship_by || 'none'}`]); }
+  if (b.handin_at !== undefined) {
+    if (!admin) throw new HttpError(403, 'forbidden', 'Only an admin can move the hand in time.');
+    if (isNaN(Date.parse(b.handin_at))) throw new HttpError(422, 'invalid', 'Pick a valid hand in time.');
+    set.push('handin_at = ?'); vals.push(new Date(b.handin_at).toISOString()); events.push(['handin', `Hand in by ${new Date(b.handin_at).toISOString()}`]);
+  }
   for (const [k, adminOnly] of [['priority', false], ['due_at', false], ['price', true], ['paid', true], ['paid_via', true], ['title', false]]) {
     if (b[k] === undefined) continue;
     if (adminOnly && !admin) throw new HttpError(403, 'forbidden', 'Only an admin can change pricing and payments.');
     let v = b[k];
     if (k === 'priority') { if (!['normal', 'rush'].includes(v)) throw new HttpError(422, 'invalid'); }
-    if (k === 'due_at') { if (isNaN(Date.parse(v))) throw new HttpError(422, 'invalid', 'Pick a valid due date.'); v = new Date(v).toISOString(); }
+    if (k === 'due_at') {
+      if (isNaN(Date.parse(v))) throw new HttpError(422, 'invalid', 'Pick a valid due date.'); v = new Date(v).toISOString();
+      if (b.handin_at === undefined) { set.push('handin_at = ?'); vals.push(handinFor(v, o.created_at > v ? now() : o.created_at)); }
+    }
     if (k === 'price') { v = v === '' || v === null ? null : Number(v); if (v !== null && (!isFinite(v) || v < 0 || v > 100000)) throw new HttpError(422, 'invalid', 'Enter a valid price.'); }
     if (k === 'paid') {
       v = v ? 1 : 0; const st = b.status || o.status;
@@ -468,14 +589,118 @@ on('PATCH', '/team/orders/:id', TEAM, async ({ request, env, params, user }) => 
   return json({ ok: true, order: await orderBundle(env, o.id, user) });
 });
 
+// QC: pass the handed in preview to the client, or send it back to the modeler with a note.
+on('POST', '/team/orders/:id/qc', ADMIN, async ({ request, env, params, user }) => {
+  const o = await loadOrder(env, params.id, user); const b = await readBody(request);
+  if (o.status !== 'review') throw new HttpError(409, 'bad_state', 'This order is not waiting for a QC check.');
+  const at = now();
+  if (field(b, 'action') === 'pass') { await releasePreview(env, request, o, user.id, at); return json({ ok: true, order: await orderBundle(env, o.id, user) }); }
+  if (field(b, 'action') !== 'back') throw new HttpError(422, 'invalid', 'Choose pass or send back.');
+  const note = clean(field(b, 'note'), 2000); if (!note) throw new HttpError(422, 'invalid', 'Tell the modeler what to fix.');
+  const back = o.revisions ? 'revisions' : 'modeling';
+  await env.DB.batch([
+    env.DB.prepare("UPDATE orders SET status = ?, updated_at = ? WHERE id = ?").bind(back, at, o.id),
+    env.DB.prepare('INSERT INTO messages (id, order_id, user_id, body, internal, created_at) VALUES (?, ?, ?, ?, 1, ?)').bind(uid('m_'), o.id, user.id, `QC sent this back: ${note}`, at),
+    env.DB.prepare('INSERT INTO events (order_id, user_id, type, detail, created_at) VALUES (?, ?, ?, ?, ?)').bind(o.id, user.id, 'qc', `Sent back to the modeler: ${note.slice(0, 200)}`, at),
+    env.DB.prepare('INSERT INTO events (order_id, user_id, type, detail, created_at) VALUES (?, ?, ?, ?, ?)').bind(o.id, user.id, 'status', `review to ${back}`, at),
+  ]);
+  if (o.assignee_id) { const m = await one(env, 'SELECT email, name FROM users WHERE id = ?', o.assignee_id); if (m) later(env, sendMail(env, m.email, `QC sent ${o.code} back`, `${note}\n\n${teamUrl(siteUrl(request, env), o.id)}`, emailHtml(siteUrl(request, env), { heading: `${o.code} needs another pass`, intro: escH(note).replace(/\n/g, '<br>'), button: { label: 'Open the order', url: teamUrl(siteUrl(request, env), o.id) } }))); }
+  return json({ ok: true, order: await orderBundle(env, o.id, user) });
+});
+
+// Ask the client for something (a photo, a detail). The clock pauses until they answer.
+on('POST', '/team/orders/:id/ask', TEAM, async ({ request, env, params, user }) => {
+  const o = await loadOrder(env, params.id, user); const b = await readBody(request);
+  if (!['new', 'confirmed', 'modeling', 'revisions'].includes(o.status)) throw new HttpError(409, 'bad_state', 'You can pause only while the model is being built.');
+  const body = clean(field(b, 'body'), 2000); if (!body) throw new HttpError(422, 'invalid', 'Tell the client what you need.');
+  const at = now();
+  await env.DB.batch([
+    env.DB.prepare("UPDATE orders SET status = 'waiting', wait_from = ?, paused_at = ?, updated_at = ? WHERE id = ?").bind(o.status === 'new' ? 'confirmed' : o.status, at, at, o.id),
+    env.DB.prepare('INSERT INTO messages (id, order_id, user_id, body, internal, created_at) VALUES (?, ?, ?, ?, 0, ?)').bind(uid('m_'), o.id, user.id, body, at),
+    env.DB.prepare('INSERT INTO events (order_id, user_id, type, detail, created_at) VALUES (?, ?, ?, ?, ?)').bind(o.id, user.id, 'status', `${o.status} to waiting`, at),
+    env.DB.prepare('INSERT INTO events (order_id, user_id, type, detail, created_at) VALUES (?, ?, ?, ?, ?)').bind(o.id, user.id, 'waiting', `Asked the client: ${body.slice(0, 200)}`, at),
+  ]);
+  const c = await one(env, 'SELECT email, name FROM users WHERE id = ?', o.created_by);
+  if (c) mailClient(env, siteUrl(request, env), c.email, c.name, `We need something for ${o.code}`, { heading: 'We need one thing from you', intro: `${escH(body).replace(/\n/g, '<br>')}<br><br>Your turnaround clock is paused until you answer, so you lose no time.`, button: { label: 'Answer in your portal', url: portalUrl(siteUrl(request, env), o.id) } });
+  return json({ ok: true, order: await orderBundle(env, o.id, user) });
+});
+on('POST', '/team/orders/:id/resume', TEAM, async ({ env, params, user }) => {
+  const o = await loadOrder(env, params.id, user);
+  if (o.status !== 'waiting') throw new HttpError(409, 'bad_state', 'This order is not paused.');
+  await env.DB.batch(resumeStatements(env, o, user.id, now()));
+  return json({ ok: true, order: await orderBundle(env, o.id, user) });
+});
+// "Got it": the team has read the client's latest message or change.
+on('POST', '/team/orders/:id/seen', TEAM, async ({ env, params, user }) => {
+  const o = await loadOrder(env, params.id, user);
+  await env.DB.prepare('UPDATE orders SET team_seen_at = ? WHERE id = ?').bind(now(), o.id).run();
+  return json({ ok: true });
+});
+
+// Job Bank: hand the modeler the most urgent unassigned order, within their capacity.
+on('POST', '/team/jobs/next', TEAM, async ({ env, user }) => {
+  const running = OPEN_STATUSES.filter(s => s !== 'approved');
+  const ph = running.map(() => '?').join(',');
+  const [held] = (await env.DB.batch([env.DB.prepare(`SELECT COUNT(*) AS n FROM orders WHERE assignee_id = ? AND status IN (${ph})`).bind(user.id, ...running)])).map(r => r.results[0]);
+  if (held.n >= user.capacity) throw new HttpError(409, 'at_capacity', `You hold ${held.n} of ${user.capacity}. Hand in or finish one first.`);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const next = await one(env, `SELECT id, code, status FROM orders WHERE assignee_id IS NULL AND status IN ('new','confirmed')
+      ORDER BY CASE priority WHEN 'rush' THEN 0 ELSE 1 END, COALESCE(handin_at, due_at), created_at LIMIT 1`);
+    if (!next) return json({ ok: true, order: null, held: held.n, capacity: user.capacity });
+    const at = now();
+    const r = await env.DB.prepare(`UPDATE orders SET assignee_id = ?, status = CASE WHEN status = 'new' THEN 'confirmed' ELSE status END, updated_at = ? WHERE id = ? AND assignee_id IS NULL`).bind(user.id, at, next.id).run();
+    if (!r.meta.changes) continue; // someone else took it a moment earlier
+    await env.DB.batch([
+      env.DB.prepare('INSERT INTO events (order_id, user_id, type, detail, created_at) VALUES (?, ?, ?, ?, ?)').bind(next.id, user.id, 'assigned', `${user.name} (Job Bank)`, at),
+      ...(next.status === 'new' ? [env.DB.prepare('INSERT INTO events (order_id, user_id, type, detail, created_at) VALUES (?, ?, ?, ?, ?)').bind(next.id, user.id, 'status', 'new to confirmed', at)] : []),
+    ]);
+    return json({ ok: true, order: { id: next.id, code: next.code }, held: held.n + 1, capacity: user.capacity });
+  }
+  throw new HttpError(409, 'busy', 'Another modeler took that job. Try again.');
+});
+
+// ---------------------------------------------------------------- build rules (handbook per product, rules per shop)
+on('GET', '/team/rules', TEAM, async ({ env, url }) => {
+  const shop = url.searchParams.get('shop');
+  const rules = await all(env, `SELECT ru.*, u.name AS updated_by_name FROM rules ru LEFT JOIN users u ON u.id = ru.updated_by
+    WHERE ${shop ? "ru.scope = 'shop' AND ru.shop_id = ?" : "ru.scope = 'product'"} ORDER BY lower(ru.product), ru.title`, ...(shop ? [shop] : []));
+  const products = (await all(env, "SELECT DISTINCT product FROM orders WHERE product IS NOT NULL AND product <> '' ORDER BY product LIMIT 50")).map(r => r.product);
+  return json({ ok: true, rules, products });
+});
+on('POST', '/team/rules', ADMIN, async ({ request, env, user }) => {
+  const b = await readBody(request);
+  const scope = b.scope === 'shop' ? 'shop' : 'product';
+  const title = clean(b.title, 120), body = clean(b.body, 3000), product = clean(b.product, 80) || 'All';
+  if (!title || !body) throw new HttpError(422, 'invalid', 'Add a title and the rule.');
+  if (scope === 'shop' && !(b.shop_id && await one(env, 'SELECT 1 FROM shops WHERE id = ?', b.shop_id))) throw new HttpError(422, 'invalid', 'Pick the shop.');
+  const id = uid('ru_'), at = now();
+  await env.DB.prepare('INSERT INTO rules (id, scope, product, shop_id, title, body, updated_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .bind(id, scope, scope === 'product' ? product : null, scope === 'shop' ? b.shop_id : null, title, body, user.id, at, at).run();
+  return json({ ok: true, id }, 201);
+});
+on('PATCH', '/team/rules/:id', ADMIN, async ({ request, env, params, user }) => {
+  const b = await readBody(request);
+  const ru = await one(env, 'SELECT * FROM rules WHERE id = ?', params.id); if (!ru) throw new HttpError(404, 'not_found');
+  const title = b.title !== undefined ? clean(b.title, 120) : ru.title, body = b.body !== undefined ? clean(b.body, 3000) : ru.body;
+  const product = ru.scope === 'product' && b.product !== undefined ? (clean(b.product, 80) || 'All') : ru.product;
+  if (!title || !body) throw new HttpError(422, 'invalid', 'Add a title and the rule.');
+  await env.DB.prepare('UPDATE rules SET title = ?, body = ?, product = ?, updated_by = ?, updated_at = ? WHERE id = ?').bind(title, body, product, user.id, now(), ru.id).run();
+  return json({ ok: true });
+});
+on('POST', '/team/rules/:id/delete', ADMIN, async ({ env, params }) => {
+  await env.DB.prepare('DELETE FROM rules WHERE id = ?').bind(params.id).run();
+  return json({ ok: true });
+});
+
 on('POST', '/team/orders/:id/delete', ADMIN, async ({ env, params, user }) => {
   const o = await loadOrder(env, params.id, user);
   const inv = await one(env, "SELECT COUNT(*) AS n FROM invoices WHERE order_id = ? AND status IN ('sent','paid')", o.id);
   if (inv.n) throw new HttpError(409, 'bad_state', 'This order has a sent or paid invoice. Void the invoice instead of deleting the order.');
-  const files = await all(env, 'SELECT r2_key FROM files WHERE order_id = ?', o.id);
+  const files = await all(env, 'SELECT DISTINCT f.r2_key FROM files f WHERE f.order_id = ? AND NOT EXISTS (SELECT 1 FROM files g WHERE g.r2_key = f.r2_key AND g.order_id <> f.order_id)', o.id);
   await removeBlobs(env, files.map(f => f.r2_key));
   await env.DB.batch([
     env.DB.prepare('DELETE FROM invoices WHERE order_id = ?').bind(o.id),
+    env.DB.prepare('DELETE FROM requests WHERE order_id = ?').bind(o.id),
     env.DB.prepare('DELETE FROM files WHERE order_id = ?').bind(o.id),
     env.DB.prepare('DELETE FROM messages WHERE order_id = ?').bind(o.id),
     env.DB.prepare('DELETE FROM events WHERE order_id = ?').bind(o.id),
@@ -505,19 +730,23 @@ on('POST', '/team/orders/:id/files', TEAM, async ({ request, env, params, user }
   if (!['preview', 'final', 'reference'].includes(kind)) throw new HttpError(422, 'invalid', 'Pick preview or final files.');
   const files = b.getAll('files');
   if (!files.some(f => typeof f === 'object' && f.size > 0)) throw new HttpError(422, 'no_files', 'Choose at least one file.');
-  const r = await storeFiles(env, o.id, files, kind, user.id, thumbMap(b));
+  const st = await getSettings(env);
+  const qc = kind === 'preview' && st.qc_enabled !== '0' && user.role !== 'admin'; // admins are the QC, their previews go straight out
+  const r = await storeFiles(env, o.id, files, kind, user.id, thumbMap(b), { released: !qc });
   const at = now(); let status = o.status;
-  if (kind === 'preview' && ['new', 'confirmed', 'modeling', 'revisions'].includes(o.status)) status = 'preview';
+  if (kind === 'preview' && ['new', 'confirmed', 'modeling', 'revisions', 'waiting', 'review', 'preview'].includes(o.status)) status = qc ? 'review' : 'preview';
   if (kind === 'final' && o.status !== 'cancelled') status = o.paid ? 'paid' : 'delivered';
   await env.DB.batch([
-    env.DB.prepare(`UPDATE orders SET status = ?, updated_at = ?, delivered_at = CASE WHEN ? = 'final' AND delivered_at IS NULL THEN ? ELSE delivered_at END WHERE id = ?`).bind(status, at, kind, at, o.id),
+    env.DB.prepare(`UPDATE orders SET status = ?, updated_at = ?, paused_at = NULL, wait_from = NULL, delivered_at = CASE WHEN ? = 'final' AND delivered_at IS NULL THEN ? ELSE delivered_at END,
+      preview_seen_at = CASE WHEN ? = 'preview' THEN NULL ELSE preview_seen_at END WHERE id = ?`).bind(status, at, kind, at, status, o.id),
     env.DB.prepare('INSERT INTO events (order_id, user_id, type, detail, created_at) VALUES (?, ?, ?, ?, ?)').bind(o.id, user.id, kind === 'final' ? 'delivered' : 'preview', `Version ${r.version}, ${r.files.length} file(s)`, at),
     ...(status !== o.status ? [env.DB.prepare('INSERT INTO events (order_id, user_id, type, detail, created_at) VALUES (?, ?, ?, ?, ?)').bind(o.id, user.id, 'status', `${o.status} to ${status}`, at)] : []),
   ]);
   const c = await one(env, 'SELECT email, name FROM users WHERE id = ?', o.created_by);
-  if (c && kind !== 'reference') mailClient(env, siteUrl(request, env), c.email, c.name, kind === 'final' ? `Your files for ${o.code} are ready` : `Preview ready for ${o.code}`, kind === 'final'
+  if (qc) later(env, alertTeam(env, siteUrl(request, env), { title: `${o.code} is ready for QC`, text: `${user.name} handed in version ${r.version} of ${o.title}. Check it and send it to the client.`, url: teamUrl(siteUrl(request, env), o.id) }));
+  if (c && kind !== 'reference' && !qc) mailClient(env, siteUrl(request, env), c.email, c.name, kind === 'final' ? `Your files for ${o.code} are ready` : `Preview ready for ${o.code}`, kind === 'final'
     ? { heading: 'Your print ready files are ready', intro: `The final files for <b>${escH(o.title)}</b> are ready to download.`, lines: [['Order', o.code], ['Files', `${r.files.length} file(s), version ${r.version}`]], button: { label: 'Download your files', url: portalUrl(siteUrl(request, env), o.id) }, outro: 'Something not printing right? Reply in the portal and we fix it.' }
-    : { heading: 'Your preview is ready', intro: `Have a look at the preview for <b>${escH(o.title)}</b>. Approve it, or tell us what to change.`, lines: [['Order', o.code], ['Version', String(r.version)]], button: { label: 'Review the preview', url: portalUrl(siteUrl(request, env), o.id) } });
+    : { heading: 'Your preview is ready', intro: `Have a look at the preview for <b>${escH(o.title)}</b>. Approve it, or tell us what to change. You can rotate the 3D model and pin exactly what to change.`, lines: [['Order', o.code], ['Version', String(r.version)]], button: { label: 'Review the preview', url: portalUrl(siteUrl(request, env), o.id) } });
   return json({ ok: true, version: r.version, status }, 201);
 });
 
@@ -628,6 +857,7 @@ const SETTING_DEFAULTS = {
   alert_email: '',
   mail_from: '',
   paypal_me: '',
+  qc_enabled: '1',
 };
 const STORAGE_LIMIT = 5 * 1024 * 1024 * 1024; // D1 free plan
 async function getSettings(env) {
@@ -811,8 +1041,8 @@ on('GET', '/backup', PUBLIC, async ({ request, env }) => {
     if (!u) throw new HttpError(401, 'unauthorized', 'Please sign in.');
     if (u.role !== 'admin') throw new HttpError(403, 'forbidden');
   }
-  const tables = ['shops', 'users', 'orders', 'files', 'messages', 'events', 'invoices', 'settings'];
-  const cols = { files: 'id, order_id, kind, version, r2_key, name, size, type, uploaded_by, created_at' };
+  const tables = ['shops', 'users', 'orders', 'files', 'messages', 'events', 'invoices', 'settings', 'requests', 'rules'];
+  const cols = { files: 'id, order_id, kind, version, r2_key, name, size, type, uploaded_by, created_at, released, request_id' };
   const r = await env.DB.batch(tables.map(t => env.DB.prepare(`SELECT ${cols[t] || '*'} FROM ${t}`)));
   const data = Object.fromEntries(tables.map((t, i) => [t, r[i].results]));
   const at = now();
@@ -824,6 +1054,7 @@ on('PATCH', '/team/settings', ADMIN, async ({ request, env }) => {
   for (const k of Object.keys(SETTING_DEFAULTS)) {
     if (b[k] === undefined) continue;
     let v = clean(b[k], k.endsWith('note') || k === 'notes' ? 1500 : k === 'alert_webhook' ? 500 : 200);
+    if (k === 'qc_enabled') v = v === '0' || v === 'false' ? '0' : '1';
     if (k === 'paypal_me') v = v.replace(/^https?:\/\/(www\.)?paypal\.me\//, '').replace(/\/.*$/, '');
     if (k === 'biz_email' && v && !validEmail(v)) throw new HttpError(422, 'invalid', 'The business email is not valid.');
     if (k === 'biz_name' && !v) throw new HttpError(422, 'invalid', 'Add the business name.');

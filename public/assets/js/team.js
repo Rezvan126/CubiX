@@ -1,9 +1,18 @@
 /* CubiX team dashboard: overview, board, orders, shops, team, order drawer. */
 (function () {
-  const { esc, icon, $, $$, get, post, patch, toast, fail, modal, pill, avatar, money, due, ago, dateTime, date } = CX;
+  const { esc, icon, $, $$, get, post, patch, toast, fail, modal, pill, avatar, money, ago, dateTime, date } = CX;
+  // Team view of time: the hand in countdown while we build, paused while waiting, QC while in review.
+  const due = o => {
+    if (o.status === 'waiting') return '<span class="due">Paused, waiting on client</span>';
+    if (o.status === 'review') return '<span class="due soon">Waiting for QC</span>';
+    if (['new', 'confirmed', 'modeling', 'revisions'].includes(o.status) && o.handin_at) return CX.countdown(o.handin_at, 'Hand in: ', 'Past due by');
+    return CX.due(o);
+  };
+  const open3d = (id, name) => CX.open3d(id, name);
+  const badges = o => `${o.priority === 'rush' ? '<span class="tag tag-rush">Rush</span>' : ''}${CX.shipRisk(o) ? `<span class="tag tag-risk" title="Ships by ${date(o.ship_by)}">Ship date at risk</span>` : ''}${o.item_count ? `<span class="tag tag-item">${o.item_no} of ${o.item_count}</span>` : ''}${o.revisions ? `<span class="tag tag-round">Round ${o.revisions + 1}</span>` : ''}${o.is_free ? '<span class="tag tag-free">Free</span>' : ''}`;
   const root = document.getElementById('root');
   const S = { me: null, members: [], overview: null, view: '', timer: null, dragging: false };
-  const BOARD = ['new', 'confirmed', 'modeling', 'preview', 'revisions', 'approved', 'delivered'];
+  const BOARD = ['new', 'confirmed', 'modeling', 'waiting', 'review', 'preview', 'revisions', 'approved', 'delivered'];
   const PAY_VIA = ['Direct', 'Payoneer', 'Upwork', 'Fiverr', 'Free first model'];
   const admin = () => S.me && S.me.role === 'admin';
 
@@ -53,7 +62,7 @@
   }
 
   // ---------------------------------------------------------------- shell
-  const NAV_ALL = [['', 'Overview', 'gauge'], ['board', 'Board', 'board'], ['orders', 'Orders', 'list'], ['shops', 'Shops', 'store'], ['invoices', 'Invoices', 'file', true], ['team', 'Team', 'users'], ['settings', 'Settings', 'shield', true]];
+  const NAV_ALL = [['', 'Overview', 'gauge'], ['board', 'Board', 'board'], ['orders', 'Orders', 'list'], ['shops', 'Shops', 'store'], ['invoices', 'Invoices', 'file', true], ['handbook', 'Handbook', 'note'], ['team', 'Team', 'users'], ['settings', 'Settings', 'shield', true]];
   let NAV = NAV_ALL;
   function renderShell() {
     NAV = NAV_ALL.filter(n => !n[3] || admin());
@@ -109,6 +118,7 @@
       else if (v === 'team') await viewTeam(main);
       else if (v === 'invoices' && admin()) await viewInvoices(main, r.q);
       else if (v === 'settings' && admin()) await viewSettings(main);
+      else if (v === 'handbook') await viewHandbook(main);
       else main.innerHTML = `<div class="empty"><h3>Page not found</h3><a class="btn btn-line" href="#/">Go to overview</a></div>`;
     } catch (e) { if (e.status !== 401) main.innerHTML = `<div class="empty">${icon('alert')}<h3>Could not load this page</h3><p>${esc(e.message)}</p><button class="btn btn-line" onclick="location.reload()">Try again</button></div>`; }
   }
@@ -136,18 +146,20 @@
     const kpi = (label, ic, val, sub, href, cls = '') => `<a class="kpi ${cls}" href="${href}"><span class="k-label">${icon(ic)}${label}</span><span class="k-val">${val}</span><span class="k-sub">${sub}</span></a>`;
     main.innerHTML = `
       <div class="top"><div><h1>${hello}, ${esc(S.me.name.split(' ')[0])}</h1><p class="muted">${open ? `${open} orders in production. ${ov.overdue ? `<b style="color:var(--bad)">${ov.overdue} overdue.</b>` : 'Nothing overdue.'}` : 'No open orders right now.'}</p></div>
-        <a class="btn btn-dark" href="#/board">${icon('board')} Open board</a></div>
-      <div class="kpis">
+        <div class="row wrap">${jobBank()}<a class="btn btn-dark" href="#/board">${icon('board')} Open board</a></div></div>
+      <div class="kpis k8">
         ${kpi('Open orders', 'layers', open, `${count('new')} new, ${count('revisions')} in revisions`, '#/orders?status=open')}
         ${kpi('Due in 24h', 'clock', ov.dueSoon, 'Keep these moving', '#/orders?status=open', ov.dueSoon ? 'warn' : '')}
         ${kpi('Overdue', 'alert', ov.overdue, ov.overdue ? 'Past the promised time' : 'All on time', '#/orders?due=overdue', ov.overdue ? 'bad' : '')}
-        ${kpi('Unassigned', 'users', ov.unassigned, 'Waiting for a modeler', '#/board?assignee=none', ov.unassigned ? 'warn' : '')}
+        ${kpi('Unassigned', 'users', ov.unassigned, 'In the Job Bank', '#/board?assignee=none', ov.unassigned ? 'warn' : '')}
+        ${kpi('Needs QC', 'shield', ov.inReview, admin() ? 'Check and send to the client' : 'With an admin for review', '#/orders?status=review', ov.inReview ? 'warn' : '')}
+        ${kpi('Waiting on clients', 'clock', ov.waiting, 'Clock paused', '#/orders?status=waiting')}
         ${kpi('Awaiting payment', 'card', money(ov.awaiting.total) || '$0', `${ov.awaiting.n} approved or delivered, unpaid`, '#/orders?unpaid=1')}
         ${kpi('Paid this month', 'dollar', money(ov.paidMonth.total) || '$0', `${ov.paidMonth.n} order${ov.paidMonth.n === 1 ? '' : 's'} closed`, '#/orders?status=paid')}
       </div>
       <div class="ov-grid">
         <div class="ov-col">
-          <section class="card"><div class="card-head"><h2>Needs attention</h2><span class="small muted">Late, due soon, unassigned or in revisions</span></div>
+          <section class="card"><div class="card-head"><h2>Needs attention</h2><span class="small muted">Late, QC, unassigned, changes or new client messages</span></div>
             <div class="alist">${ov.attention.length ? ov.attention.map(o => `<button class="aitem" data-o="${o.id}">
               ${avatar(o.assignee_name)}<div class="grow"><div class="ttl ellipsis">${esc(o.title)}</div><div class="sub ellipsis">${esc(o.code)} · ${esc(o.shop_name)}</div></div>
               <div style="display:grid;justify-items:end;gap:4px">${pill(o.status)}${due(o) || (o.assignee_name ? '' : '<span class="due soon">Unassigned</span>')}</div></button>`).join('')
@@ -175,6 +187,7 @@
         </div>
       </div>`;
     $$('[data-o]', main).forEach(b => b.addEventListener('click', () => openOrder(b.dataset.o)));
+    wireJobBank(main);
   }
 
   // ---------------------------------------------------------------- shared filters
@@ -194,14 +207,15 @@
     const qs = new URLSearchParams(); if (q.get('assignee')) qs.set('assignee', q.get('assignee')); if (q.get('q')) qs.set('q', q.get('q'));
     const [open, delivered] = await Promise.all([get('/team/orders?status=open&' + qs), get('/team/orders?status=delivered&' + qs)]);
     const orders = [...open.orders, ...delivered.orders];
-    main.innerHTML = `<div class="top"><div><h1>Board</h1><p class="muted">Drag a card to move it. Click to open.</p></div></div>
+    await refreshOverview();
+    main.innerHTML = `<div class="top"><div><h1>Board</h1><p class="muted">Drag a card to move it. Click to open.</p></div>${jobBank()}</div>
       <div class="toolbar"><label class="search">${icon('search')}<span class="sr">Search</span><input class="input input-sm" id="q" placeholder="Order code, title or shop" value="${esc(q.get('q') || '')}"></label>
         <select class="input input-sm" data-filter="assignee" style="width:auto" aria-label="Assignee">${assigneeOptions(q.get('assignee') || '')}</select>
         <span class="small muted" style="margin-left:auto">${orders.length} orders</span></div>
       <div class="board">${BOARD.map(s => { const list = orders.filter(o => o.status === s); return `<section class="col" data-status="${s}" aria-label="${CX.STATUS[s]}">
         <div class="col-head"><b>${CX.STATUS[s]}</b><span class="n">${list.length}</span></div>
         ${list.map(card).join('') || `<p class="small muted" style="text-align:center;padding:14px 0">${s === 'delivered' ? 'Unpaid deliveries show here' : 'Nothing here'}</p>`}</section>`; }).join('')}</div>`;
-    wireToolbar(main);
+    wireToolbar(main); wireJobBank(main);
     $$('.ocard', main).forEach(c => {
       c.addEventListener('click', () => openOrder(c.dataset.id));
       c.addEventListener('dragstart', e => { S.dragging = true; c.classList.add('dragging'); e.dataTransfer.setData('text/plain', c.dataset.id); e.dataTransfer.effectAllowed = 'move'; });
@@ -219,10 +233,24 @@
       });
     });
   }
+  function jobBank() {
+    const meRow = S.overview && S.overview.team.find(m => m.id === S.me.id);
+    const held = meRow ? meRow.open : 0, cap = meRow ? meRow.capacity : (S.me.capacity || 4);
+    return `<div class="jobbank"><button class="btn btn-primary" id="takeNext" ${held >= cap ? 'disabled' : ''}>${icon('plus')} ${held >= cap ? 'You are at capacity' : 'Take next job'}</button><span class="hold">You hold ${held} of ${cap}</span></div>`;
+  }
+  function wireJobBank(main) {
+    const b = $('#takeNext', main); if (!b) return;
+    b.addEventListener('click', async () => {
+      CX.busy(b, true);
+      try { const r = await post('/team/jobs/next'); await refreshOverview(); if (!r.order) { toast('No jobs waiting right now. Nice work.'); renderView(false); return; } toast(`${r.order.code} is yours`); openOrder(r.order.id); renderView(false); }
+      catch (e) { fail(e); CX.busy(b, false); }
+    });
+  }
   function card(o) {
-    return `<button class="ocard ${CX.isLate(o) ? 'late' : ''}" draggable="true" data-id="${o.id}">
-      <div class="top-r">${thumb(o)}<div class="grow"><div class="ttl">${esc(o.title)}</div><div class="shop ellipsis">${esc(o.shop_name)}</div></div></div>
-      <div class="tags">${o.priority === 'rush' ? '<span class="tag tag-rush">Rush</span>' : ''}${o.is_free ? '<span class="tag tag-free">Free model</span>' : ''}${o.revisions ? `<span class="tag tag-plan">Rev ${o.revisions}</span>` : ''}${o.message_count ? `<span class="tag tag-plan">${o.message_count} msg</span>` : ''}</div>
+    const late = ['new', 'confirmed', 'modeling', 'revisions'].includes(o.status) && o.handin_at && new Date(o.handin_at) < Date.now();
+    return `<button class="ocard ${late || CX.isLate(o) ? 'late' : ''}" draggable="true" data-id="${o.id}">
+      <div class="top-r">${thumb(o)}<div class="grow"><div class="ttl">${esc(o.title)}</div><div class="shop ellipsis">${esc(o.shop_name)}</div></div>${o.unread ? '<span class="unread-dot" title="New from the client"></span>' : ''}</div>
+      <div class="tags">${badges(o)}${o.status === 'preview' ? `<span class="tag tag-plan">${o.preview_seen_at ? 'Seen' : 'Not opened yet'}</span>` : ''}</div>
       <div class="foot"><span class="code">${esc(o.code)}</span>${due(o) || (o.status === 'delivered' ? '<span class="due">Awaiting payment</span>' : '')}${avatar(o.assignee_name)}</div></button>`;
   }
 
@@ -290,13 +318,15 @@
     });
   }
   async function shopModal(id) {
-    let d; try { d = await get('/team/shops/' + id); } catch (e) { return fail(e); }
+    let d, shopRules = []; try { [d, shopRules] = await Promise.all([get('/team/shops/' + id), get('/team/rules?shop=' + id).then(x => x.rules)]); } catch (e) { return fail(e); }
     const s = d.shop;
     modal(`<div class="row" style="justify-content:space-between;align-items:flex-start"><div><h2>${esc(s.name)}</h2>${s.url ? `<p class="small muted ellipsis" style="max-width:340px">${esc(s.url)}</p>` : ''}</div><button class="icon-btn" data-close aria-label="Close">${icon('x')}</button></div>
       <div class="grid2"><label class="field"><span>Plan</span><select class="input" id="sPlan" ${admin() ? '' : 'disabled'}>${Object.entries(CX.PLANS).map(([k, l]) => `<option value="${k}" ${s.plan === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
         <div class="field"><span>First free model</span><div class="input" style="display:flex;align-items:center;background:var(--surface)">${s.free_used ? 'Used' : 'Not used yet'}</div></div></div>
       <label class="field"><span>Notes for the team</span><textarea class="input" id="sNotes" ${admin() ? '' : 'disabled'} placeholder="Style preferences, volume, how they like to be contacted">${esc(s.notes || '')}</textarea></label>
       ${admin() ? '<div class="modal-actions" style="justify-content:flex-start"><button class="btn btn-dark btn-sm" id="sSave">Save shop</button></div>' : ''}
+      <div><div class="row" style="justify-content:space-between"><span class="label">Build rules for this shop</span>${admin() ? '<button type="button" class="link small" id="addShopRule">Add a rule</button>' : ''}</div>
+        <div style="display:grid;gap:8px;margin-top:8px">${shopRules.map(r => `<div style="padding:10px 12px;border:1px solid var(--line);border-radius:12px;background:#f6f3ff"><div class="row" style="justify-content:space-between"><b class="small" style="color:var(--ink)">${esc(r.title)}</b>${admin() ? `<button type="button" class="link small" data-delsr="${r.id}" style="color:var(--bad)">Delete</button>` : ''}</div><p class="small" style="white-space:pre-wrap;margin-top:3px">${esc(r.body)}</p></div>`).join('') || '<p class="small muted">None yet. Add the specs this shop always wants (base, wall thickness, colors, printer).</p>'}</div></div>
       <div><span class="label">People</span><div style="display:grid;gap:8px;margin-top:8px">${d.users.map(u => `<div class="row" style="padding:10px 12px;border:1px solid var(--line);border-radius:12px">${avatar(u.name)}<div class="grow"><b class="small" style="color:var(--ink)">${esc(u.name)}</b><div class="small muted ellipsis">${esc(u.email)}</div></div>
         ${u.has_login ? `<span class="small muted">${u.last_login_at ? 'Seen ' + ago(u.last_login_at) : 'Has login'}</span>` : ''}${admin() ? `<button class="btn btn-line btn-sm" data-link="${u.id}">${icon('link')} ${u.has_login ? 'Reset link' : 'Login link'}</button>` : ''}</div>`).join('')}</div></div>
       <div><span class="label">Orders</span><div style="display:grid;gap:6px;margin-top:8px">${d.orders.map(o => `<button class="aitem" style="border:1px solid var(--line);border-radius:12px;padding:10px 12px" data-o="${o.id}"><div class="grow"><div class="ttl ellipsis">${esc(o.title)}</div><div class="sub">${esc(o.code)} · ${date(o.created_at)}</div></div>${pill(o.status)}</button>`).join('') || '<p class="small muted">No orders yet.</p>'}</div></div>`,
@@ -308,6 +338,14 @@
         catch (e) { fail(e); }
       }));
       $$('[data-o]', box).forEach(b => b.addEventListener('click', () => { close(); openOrder(b.dataset.o); }));
+      const asr = $('#addShopRule', box);
+      asr && asr.addEventListener('click', () => { close(); modal(`<h2>Rule for ${esc(s.name)}</h2><p class="muted small">Shows at the top of every job from this shop.</p>
+        <form id="srf" style="display:grid;gap:14px"><label class="field"><span>Title</span><input class="input" name="title" required placeholder="Always a 3 mm base"></label>
+        <label class="field"><span>The rule</span><textarea class="input" name="body" required style="min-height:110px" placeholder="3 mm base plate with the house number engraved. Split roof for multicolor. Bambu A1."></textarea></label>
+        <p class="form-msg" role="alert"></p><div class="modal-actions"><button type="button" class="btn btn-line" data-close>Cancel</button><button class="btn btn-primary" type="submit">Save rule</button></div></form>`, (bx, c2) => {
+        CX.submit($('#srf', bx), async dd => { await post('/team/rules', { ...dd, scope: 'shop', shop_id: id }); c2(); toast('Shop rule saved'); shopModal(id); });
+      }); });
+      $$('[data-delsr]', box).forEach(b => b.addEventListener('click', async () => { await post(`/team/rules/${b.dataset.delsr}/delete`); close(); toast('Rule deleted'); shopModal(id); }));
     });
   }
 
@@ -347,7 +385,8 @@
     if (!id) { closeDrawerDom(); return; }
     if (id !== drawerId) renderDrawer(id);
   }
-  function closeDrawerDom() { drawerId = null; $('.drawer') && $('.drawer').remove(); $('.drawer-bg') && $('.drawer-bg').remove(); document.removeEventListener('keydown', drawerKey); }
+  const killViewers = () => { (S.viewers || []).forEach(v => { try { v.destroy(); } catch {} }); S.viewers = []; };
+  function closeDrawerDom() { killViewers(); drawerId = null; $('.drawer') && $('.drawer').remove(); $('.drawer-bg') && $('.drawer-bg').remove(); document.removeEventListener('keydown', drawerKey); }
   const drawerKey = e => { if (e.key === 'Escape' && !$('.modal')) setQ({ o: '' }); };
   const toLocal = iso => { const d = new Date(iso); return new Date(d - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16); };
   async function renderDrawer(id, keepScroll) {
@@ -363,29 +402,57 @@
     try { o = (await get('/team/orders/' + id)).order; } catch (e) { if (drawerId === id) { setQ({ o: '' }); fail(e); } return; }
     if (drawerId !== id) return;
     const scroll = keepScroll ? $('.drawer-body', dr).scrollTop : 0;
+    killViewers();
     const mine = o.assignee_id === S.me.id;
     const canAssign = admin() ? S.members.filter(m => m.active) : S.members.filter(m => m.id === S.me.id || m.id === o.assignee_id);
     const groups = { reference: [], preview: [], final: [] }; o.files.forEach(f => groups[f.kind].push(f));
-    const fileTile = f => `<a class="file" href="${CX.fileUrl(f.id)}" title="${esc(f.name)}"><span class="fprev">${CX.isImg(f) ? `<img src="${CX.thumbUrl(f.id)}" alt="" loading="lazy">` : esc(CX.ext(f.name))}</span><span class="fname">${esc(f.name)}</span><span class="small muted">${CX.size(f.size)}</span></a>`;
+    const fileTile = f => `<div class="file"><a href="${CX.fileUrl(f.id)}" title="Download ${esc(f.name)}" style="display:grid;gap:6px;text-decoration:none"><span class="fprev">${CX.isImg(f) ? `<img src="${CX.thumbUrl(f.id)}" alt="" loading="lazy">` : esc(CX.ext(f.name))}</span><span class="fname">${esc(f.name)}</span></a><span class="small muted">${CX.size(f.size)}${f.released === 0 ? ' · held for QC' : ''}</span>${CX.isModel(f.name) ? `<button type="button" class="link small" data-3d="${f.id}" data-name="${esc(f.name)}" style="justify-self:start">View in 3D</button>` : ''}</div>`;
+    const models = o.files.filter(f => CX.isModel(f.name) && f.kind !== 'reference');
+    const lastModel = models.filter(f => f.kind === 'preview' && f.released !== 0).sort((a, b) => b.version - a.version || (b.created_at > a.created_at ? 1 : -1))[0] || models[models.length - 1];
+    const unread = o.client_msg_at && o.client_msg_at > (o.team_seen_at || '');
+    const lastClientMsg = [...o.messages].reverse().find(m => m.author_role === 'client');
+    const reqs = o.requests || [], cur = reqs[reqs.length - 1];
+    const held = o.files.filter(f => f.kind === 'preview' && f.released === 0);
+    const pinList = (pins, key) => pins.length ? `<ol class="pinlist" data-pins="${key}">${pins.map(p => `<li><button type="button" class="pn" data-pin="${p.n}" aria-label="Show pin ${p.n} on the model">${p.n}</button><p>${esc(p.note || 'No note')}</p></li>`).join('')}</ol>` : '<p class="small muted">No pins on the model.</p>';
     const versions = list => { const by = {}; list.forEach(f => (by[f.version] = by[f.version] || []).push(f)); return Object.keys(by).sort((a, b) => b - a).map(v => `<div class="small muted" style="font-weight:600">Version ${v}${+v === Math.max(...Object.keys(by)) ? ' (latest)' : ''}</div><div class="files">${by[v].map(fileTile).join('')}</div>`).join(''); };
     const quick = [];
     if (!o.assignee_id && ['new', 'confirmed', 'modeling', 'revisions'].includes(o.status)) quick.push(`<button class="btn btn-primary btn-sm" data-act="claim">${icon('plus')} Claim this order</button>`);
     if (o.status === 'confirmed' || o.status === 'new') quick.push(`<button class="btn btn-line btn-sm" data-act="modeling">Start modeling</button>`);
-    if (['modeling', 'revisions', 'confirmed', 'new'].includes(o.status)) quick.push(`<button class="btn btn-dark btn-sm" data-up="preview">${icon('upload')} Send preview</button>`);
+    if (['modeling', 'revisions', 'confirmed', 'new', 'review'].includes(o.status)) quick.push(`<button class="btn btn-dark btn-sm" data-up="preview">${icon('upload')} ${admin() ? 'Send preview' : 'Hand in preview'}</button>`);
+    if (['modeling', 'revisions', 'confirmed', 'new'].includes(o.status)) quick.push(`<button class="btn btn-line btn-sm" data-act="ask">${icon('chat')} Ask the client</button>`);
     if (['approved', 'preview', 'modeling', 'revisions', 'delivered', 'paid'].includes(o.status)) quick.push(`<button class="btn ${o.status === 'approved' ? 'btn-ok' : 'btn-line'} btn-sm" data-up="final">${icon('upload')} ${o.status === 'delivered' || o.status === 'paid' ? 'Upload new final files' : 'Deliver final files'}</button>`);
     if (admin() && ['approved', 'delivered'].includes(o.status) && !o.paid) quick.push(`<button class="btn btn-line btn-sm" data-act="paid">${icon('dollar')} Mark paid</button>`);
 
-    dr.innerHTML = `<div class="drawer-head"><div class="grow"><div class="row wrap" style="gap:8px;margin-bottom:6px"><span class="code">${esc(o.code)}</span>${pill(o.status)}${o.priority === 'rush' ? '<span class="tag tag-rush">Rush</span>' : ''}${o.is_free ? '<span class="tag tag-free">Free first model</span>' : ''}${due(o)}</div>
-        <h2>${esc(o.title)}</h2><p class="small muted" style="margin-top:4px"><button class="link" data-shop="${o.shop_id}" style="color:var(--muted)">${esc(o.shop_name)}</button> · <span class="tag tag-plan">${CX.PLANS[o.shop_plan] || ''}</span> · ordered ${ago(o.created_at)}</p></div>
+    dr.innerHTML = `<div class="drawer-head"><div class="grow"><div class="row wrap" style="gap:8px;margin-bottom:6px"><span class="code">${esc(o.code)}</span>${pill(o.status)}${badges(o)}${due(o)}</div>
+        <h2>${esc(o.title)}</h2><p class="small muted" style="margin-top:4px"><button class="link" data-shop="${o.shop_id}" style="color:var(--muted)">${esc(o.shop_name)}</button> · <span class="tag tag-plan">${CX.PLANS[o.shop_plan] || ''}</span> · ordered ${ago(o.created_at)} · client due ${dateTime(o.due_at)}${o.ship_by ? ` · ships by ${date(o.ship_by)}` : ''}</p>
+        ${o.status === 'preview' ? `<p class="small" style="margin-top:4px;font-weight:600;color:${o.preview_seen_at ? 'var(--ok)' : 'var(--muted)'}">${o.preview_seen_at ? `Client opened the preview ${ago(o.preview_seen_at)}` : 'Client has not opened the preview yet'}</p>` : ''}
+        ${o.siblings && o.siblings.length > 1 ? `<div class="siblings" style="margin-top:8px">${o.siblings.map(x => `<a href="#" data-sib="${x.id}" ${x.id === o.id ? 'aria-current="true"' : ''}>${x.item_no} of ${o.item_count}</a>`).join('')}</div>` : ''}</div>
         <button class="icon-btn" id="dClose" aria-label="Close">${icon('x')}</button></div>
       <div class="drawer-body">
         ${quick.length ? `<div class="upl">${quick.join('')}</div><div class="progress" id="upProg" hidden><i></i></div>` : ''}
         <input type="file" id="upInput" multiple hidden>
+        ${unread ? `<div class="banner-new">${icon('chat')}<div class="grow"><b>New from the client</b> <span class="small muted">${ago(o.client_msg_at)}</span><p>${esc(lastClientMsg ? lastClientMsg.body : 'The client sent files or approved.')}</p></div><button class="btn btn-dark btn-sm" data-act="gotit">${icon('check')} Got it</button></div>` : ''}
+        ${o.rules && o.rules.length ? `<section class="rulebox"><h3>This job must have</h3>${o.rules.map(r => `<div class="rule"><b>${esc(r.title)} <small>${r.scope === 'shop' ? 'for ' + esc(o.shop_name) : esc(r.product)}</small></b><p>${esc(r.body)}</p></div>`).join('')}</section>` : ''}
+        ${o.status === 'waiting' ? `<div class="waitbox">${icon('clock')}<div class="grow"><b>Waiting on the client since ${ago(o.paused_at)}</b><div class="small muted">The clock is paused. It restarts by itself when the client answers.</div></div><button class="btn btn-line btn-sm" data-act="resume">Resume now</button></div>` : ''}
+        ${o.status === 'review' ? `<section class="qcbox"><div class="row wrap" style="justify-content:space-between"><h3>${icon('shield')} QC check, round ${o.round}</h3><span class="small muted">The client sees nothing until it passes</span></div>
+          ${held.length ? `<div class="files">${held.map(fileTile).join('')}</div>` : '<p class="small muted">No held preview files.</p>'}
+          ${admin() ? `<div class="row wrap"><button class="btn btn-ok btn-sm" data-act="qcpass">${icon('check')} Pass and send to the client</button><button class="btn btn-line btn-sm" data-act="qcback">Send back to the modeler</button></div>` : '<p class="small">An admin checks this before it goes to the client.</p>'}</section>` : ''}
+        ${cur ? `<section class="roundbox"><div class="row wrap" style="justify-content:space-between"><h3>What to change, round ${cur.round}</h3><span class="small muted">${esc(cur.author || 'Client')} · ${ago(cur.created_at)}</span></div>
+          ${lastModel ? `<p class="small">Start from the last round: <a href="${CX.fileUrl(lastModel.id)}" style="font-weight:600">${esc(lastModel.name)}</a></p>` : ''}
+          <div class="two"><div>${(cur.model_file && o.files.find(f => f.id === cur.model_file)) || lastModel ? `<div data-mount3d="${(o.files.find(f => f.id === cur.model_file) || lastModel).id}" data-name="${esc((o.files.find(f => f.id === cur.model_file) || lastModel).name)}" data-pinset="cur"></div>` : '<p class="small muted">No 3D model to show.</p>'}</div>
+            <div style="display:grid;gap:10px"><p style="white-space:pre-wrap;font-size:14.5px">${esc(cur.body)}</p>${pinList(cur.pins, 'cur')}
+            ${o.files.filter(f => f.request_id === cur.id).length ? `<div class="files">${o.files.filter(f => f.request_id === cur.id).map(fileTile).join('')}</div>` : ''}</div></div>
+          ${reqs.length > 1 ? `<details><summary class="small" style="cursor:pointer;font-weight:600">Earlier requests (${reqs.length - 1})</summary><div style="display:grid;gap:12px;margin-top:10px">${reqs.slice(0, -1).reverse().map(r => `<div style="padding:10px 12px;background:#fff;border-radius:10px;border:1px solid var(--line)"><b class="small">Round ${r.round} · ${date(r.created_at)}</b><p style="white-space:pre-wrap;font-size:13.5px;margin:4px 0 6px">${esc(r.body)}</p>${r.pins.length ? r.pins.map(p => `<div class="small muted">Pin ${p.n}: ${esc(p.note || 'No note')}</div>`).join('') : ''}</div>`).join('')}</div></details>` : ''}
+        </section>` : ''}
         <section class="card card-pad"><div class="ctrls">
           <label class="field"><span>Status</span><select class="input input-sm" data-set="status">${Object.entries(CX.STATUS).map(([k, l]) => `<option value="${k}" ${o.status === k ? 'selected' : ''} ${k === 'paid' && !admin() ? 'disabled' : ''}>${l}</option>`).join('')}</select></label>
           <label class="field"><span>Modeler</span><select class="input input-sm" data-set="assignee_id"><option value="">Unassigned</option>${canAssign.map(m => `<option value="${m.id}" ${o.assignee_id === m.id ? 'selected' : ''}>${esc(m.name)}${m.id === S.me.id ? ' (me)' : ''}</option>`).join('')}</select></label>
           <label class="field"><span>Priority</span><select class="input input-sm" data-set="priority"><option value="normal">Normal</option><option value="rush" ${o.priority === 'rush' ? 'selected' : ''}>Rush</option></select></label>
-          <label class="field"><span>Due</span><input class="input input-sm" type="datetime-local" data-set="due_at" value="${toLocal(o.due_at)}"></label>
+          <label class="field"><span>Client due</span><input class="input input-sm" type="datetime-local" data-set="due_at" value="${toLocal(o.due_at)}"></label>
+        </div>
+        <div class="ctrls" style="margin-top:12px;grid-template-columns:1fr 1fr">
+          <label class="field"><span>Hand in by</span><input class="input input-sm" type="datetime-local" data-set="handin_at" value="${o.handin_at ? toLocal(o.handin_at) : ''}" ${admin() ? '' : 'disabled'}></label>
+          <label class="field"><span>Shop ships by</span><input class="input input-sm" type="date" data-set="ship_by" value="${o.ship_by ? o.ship_by.slice(0, 10) : ''}"></label>
         </div>
         ${admin() ? `<div class="ctrls" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line)">
           <label class="field"><span>Price (USD)</span><input class="input input-sm num" type="number" min="0" step="1" data-set="price" value="${o.price ?? ''}" placeholder="${o.is_free ? 'Free' : 'Not set'}"></label>
@@ -420,7 +487,7 @@
     };
     $$('[data-set]', dr).forEach(el => el.addEventListener('change', () => {
       const k = el.dataset.set; let v = el.type === 'checkbox' ? el.checked : el.value;
-      if (k === 'due_at') { if (!v) return; v = new Date(v).toISOString(); }
+      if (k === 'due_at' || k === 'handin_at') { if (!v) return; v = new Date(v).toISOString(); }
       if (k === 'assignee_id') v = v || null;
       changed({ [k]: v }, 'Saved');
     }));
@@ -429,7 +496,28 @@
       if (a === 'claim') changed({ assignee_id: S.me.id }, 'Order is yours');
       if (a === 'modeling') changed({ status: 'modeling' }, 'Moved to modeling');
       if (a === 'paid') changed({ paid: true }, 'Marked as paid');
+      if (a === 'gotit') post(`/team/orders/${o.id}/seen`).then(() => { renderDrawer(o.id, true); renderView(false); }).catch(fail);
+      if (a === 'resume') post(`/team/orders/${o.id}/resume`).then(() => { toast('Clock running again'); refreshOverview(); renderDrawer(o.id, true); renderView(false); }).catch(fail);
+      if (a === 'qcpass') post(`/team/orders/${o.id}/qc`, { action: 'pass' }).then(() => { toast('Passed. The client has the preview now.'); refreshOverview(); renderDrawer(o.id, true); renderView(false); }).catch(fail);
+      if (a === 'qcback' || a === 'ask') modal(`<h2>${a === 'ask' ? 'Ask the client' : 'Send back to the modeler'}</h2><p class="muted small">${a === 'ask' ? 'The client gets this in their portal and by email. Your clock pauses until they answer.' : 'The modeler sees this as an internal note. The client sees nothing.'}</p>
+        <form id="nf2" style="display:grid;gap:14px"><textarea class="input" name="body" required placeholder="${a === 'ask' ? 'Could you send a photo of the back of the house?' : 'The roof line does not match photo 2. Fix it and hand in again.'}" style="min-height:110px"></textarea>
+        <p class="form-msg" role="alert"></p><div class="modal-actions"><button type="button" class="btn btn-line" data-close>Cancel</button><button class="btn btn-primary" type="submit">${a === 'ask' ? 'Send and pause the clock' : 'Send back'}</button></div></form>`, (box, close) => {
+        CX.submit($('#nf2', box), async d => {
+          if (!d.body.trim()) throw new Error(a === 'ask' ? 'Tell the client what you need.' : 'Tell the modeler what to fix.');
+          await post(a === 'ask' ? `/team/orders/${o.id}/ask` : `/team/orders/${o.id}/qc`, a === 'ask' ? { body: d.body } : { action: 'back', note: d.body });
+          close(); toast(a === 'ask' ? 'Sent. The clock is paused.' : 'Sent back to the modeler'); refreshOverview(); renderDrawer(o.id, true); renderView(false);
+        });
+      });
     }));
+    $$('[data-sib]', dr).forEach(x => x.addEventListener('click', e => { e.preventDefault(); openOrder(x.dataset.sib); }));
+    // 3D viewers: inline for the change request, and in a window for any model file
+    $$('[data-mount3d]', dr).forEach(el => CX.loadViewer().then(m => {
+      const pins = el.dataset.pinset === 'cur' && cur ? cur.pins : [];
+      const v = m.mount(el, { url: CX.fileUrl(el.dataset.mount3d), name: el.dataset.name, pins });
+      (S.viewers = S.viewers || []).push(v);
+      $$(`[data-pins="${el.dataset.pinset}"] [data-pin]`, dr).forEach(b => b.addEventListener('click', () => v.focusPin(+b.dataset.pin)));
+    }).catch(() => { el.innerHTML = '<p class="small muted">The 3D viewer could not load. Download the file instead.</p>'; }));
+    $$('[data-3d]', dr).forEach(b => b.addEventListener('click', () => open3d(b.dataset['3d'], b.dataset.name)));
     const del = $('#delOrder', dr);
     del && del.addEventListener('click', async () => {
       if (!(await CX.confirm(`Delete ${o.code}?`, 'The order, its files, messages and history are removed for good. Use this for spam, tests or duplicates.', 'Delete order'))) return;
@@ -458,12 +546,34 @@
     });
   }
   function eventText(e) {
-    const map = { created: 'Order placed', approved: 'Shop approved the preview', revision: 'Shop asked for changes', preview: 'Preview sent', delivered: 'Final files delivered', assigned: 'Assigned to ' + (e.detail || ''), status: 'Status changed' };
+    const map = { qc: e.detail || 'QC check', waiting: e.detail || 'Asked the client', resumed: e.detail || 'Clock resumed', invoice: e.detail || 'Invoice', files: e.detail || 'Files added', handin: 'Hand in time changed', ship_by: e.detail || 'Ship by date changed', created: 'Order placed', approved: 'Shop approved the preview', revision: 'Shop asked for changes', preview: 'Preview sent', delivered: 'Final files delivered', assigned: 'Assigned to ' + (e.detail || ''), status: 'Status changed' };
     let t = map[e.type] || e.type.replace(/_/g, ' ');
     if (e.type === 'status' && e.detail) { const [a, b] = e.detail.split(' to '); t = `Moved from ${CX.STATUS[a] || a} to ${CX.STATUS[b] || b}`; }
     else if (['preview', 'delivered', 'revision', 'created'].includes(e.type) && e.detail) t += ': ' + e.detail;
     else if (!map[e.type] && e.detail) t = e.detail.replace(/_/g, ' ');
     return t;
+  }
+
+  // ---------------------------------------------------------------- handbook (standing build rules per product)
+  async function viewHandbook(main) {
+    const { rules, products } = await get('/team/rules');
+    const groups = {}; rules.forEach(r => (groups[r.product || 'All'] = groups[r.product || 'All'] || []).push(r));
+    main.innerHTML = `<div class="top"><div><h1>Handbook</h1><p class="muted">The standing build rules, per product. They show at the top of every matching job. Rules for a single shop live in that shop's page.</p></div>
+        ${admin() ? `<button class="btn btn-primary" id="addRule">${icon('plus')} Add a rule</button>` : ''}</div>
+      <div class="handbook">${rules.length ? Object.keys(groups).sort((a, b) => a === 'All' ? -1 : b === 'All' ? 1 : a.localeCompare(b)).map(g => `<section class="card"><div class="card-head"><h2>${esc(g === 'All' ? 'Every job' : g)}</h2><span class="small muted">${groups[g].length} rule${groups[g].length > 1 ? 's' : ''}</span></div>
+        ${groups[g].map(r => `<div class="rulecard" style="border-top:1px solid var(--line)"><div class="row" style="justify-content:space-between"><b style="color:var(--ink)">${esc(r.title)}</b>${admin() ? `<span class="row"><button class="link small" data-edit="${r.id}">Edit</button><button class="link small" data-del="${r.id}" style="color:var(--bad)">Delete</button></span>` : ''}</div>
+          <p>${esc(r.body)}</p><span class="small muted">Last changed ${date(r.updated_at)}${r.updated_by_name ? ` by ${esc(r.updated_by_name)}` : ''}</span></div>`).join('')}</section>`).join('')
+        : `<div class="card empty">${icon('note')}<h3>No rules yet</h3><p>Write down how each product is built (wall thickness, hollow or solid, how windows are cut) so every modeler gets it right the first time.</p></div>`}</div>`;
+    const editor = r => modal(`<h2>${r ? 'Edit rule' : 'Add a rule'}</h2>
+      <form id="rf" style="display:grid;gap:14px"><label class="field"><span>Product</span><input class="input" name="product" list="prodList" value="${esc(r ? r.product : '')}" placeholder="House replica, or All for every job"><datalist id="prodList"><option value="All">${products.map(p => `<option value="${esc(p)}">`).join('')}</datalist><small>Must match the product name on orders. Use All for every job.</small></label>
+      <label class="field"><span>Title</span><input class="input" name="title" required value="${esc(r ? r.title : '')}" placeholder="Hollow body, open underneath"></label>
+      <label class="field"><span>The rule</span><textarea class="input" name="body" required style="min-height:130px" placeholder="Walls 2 mm. Open underneath. Every window cut through. One watertight mesh.">${esc(r ? r.body : '')}</textarea></label>
+      <p class="form-msg" role="alert"></p><div class="modal-actions"><button type="button" class="btn btn-line" data-close>Cancel</button><button class="btn btn-primary" type="submit">Save rule</button></div></form>`, (box, close) => {
+      CX.submit($('#rf', box), async d => { if (r) await patch('/team/rules/' + r.id, d); else await post('/team/rules', { ...d, scope: 'product' }); close(); toast('Rule saved'); renderView(false); });
+    });
+    const add = $('#addRule', main); add && add.addEventListener('click', () => editor(null));
+    $$('[data-edit]', main).forEach(b => b.addEventListener('click', () => editor(rules.find(r => r.id === b.dataset.edit))));
+    $$('[data-del]', main).forEach(b => b.addEventListener('click', async () => { if (!(await CX.confirm('Delete this rule?', 'It disappears from the handbook and from every job.', 'Delete'))) return; await post(`/team/rules/${b.dataset.del}/delete`); toast('Rule deleted'); renderView(false); }));
   }
 
   // ---------------------------------------------------------------- invoices
