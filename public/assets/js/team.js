@@ -53,7 +53,7 @@
   }
 
   // ---------------------------------------------------------------- shell
-  const NAV_ALL = [['', 'Overview', 'gauge'], ['board', 'Board', 'board'], ['orders', 'Orders', 'list'], ['shops', 'Shops', 'store'], ['invoices', 'Invoices', 'file', true], ['team', 'Team', 'users']];
+  const NAV_ALL = [['', 'Overview', 'gauge'], ['board', 'Board', 'board'], ['orders', 'Orders', 'list'], ['shops', 'Shops', 'store'], ['invoices', 'Invoices', 'file', true], ['team', 'Team', 'users'], ['settings', 'Settings', 'shield', true]];
   let NAV = NAV_ALL;
   function renderShell() {
     NAV = NAV_ALL.filter(n => !n[3] || admin());
@@ -108,6 +108,7 @@
       else if (v === 'shops') await viewShops(main);
       else if (v === 'team') await viewTeam(main);
       else if (v === 'invoices' && admin()) await viewInvoices(main, r.q);
+      else if (v === 'settings' && admin()) await viewSettings(main);
       else main.innerHTML = `<div class="empty"><h3>Page not found</h3><a class="btn btn-line" href="#/">Go to overview</a></div>`;
     } catch (e) { if (e.status !== 401) main.innerHTML = `<div class="empty">${icon('alert')}<h3>Could not load this page</h3><p>${esc(e.message)}</p><button class="btn btn-line" onclick="location.reload()">Try again</button></div>`; }
   }
@@ -163,6 +164,9 @@
               <div class="bar thin ${capClass(mr)}"><i style="width:${Math.min(100, mr * 100)}%"></i></div></div>
               <a class="icon-btn" href="#/board?assignee=${m.id}" aria-label="Board for ${esc(m.name)}">${icon('chevron')}</a></div>`; }).join('') || '<div class="empty">No team members yet.</div>'}</div>
             ${admin() ? `<div style="padding:12px 20px;border-top:1px solid var(--line)"><a class="small" href="#/team" style="font-weight:600">Change capacity or add people</a></div>` : ''}</section>
+          ${ov.sources && ov.sources.length ? `<section class="card"><div class="card-head"><h2>Where orders come from</h2><span class="small muted">Last 30 days</span></div>
+            <div style="padding:8px 20px 16px;display:grid;gap:10px">${(() => { const max = Math.max(...ov.sources.map(x => x.n)); return ov.sources.map(x => `<div><div class="row" style="justify-content:space-between"><span class="small" style="font-weight:600;color:var(--ink)">${esc(x.source)}</span><span class="small muted num">${x.n}</span></div><div class="bar thin"><i style="width:${x.n / max * 100}%;background:var(--accent)"></i></div></div>`).join(''); })()}</div></section>` : ''}
+          ${admin() && ov.storage && ov.storage.limit && ov.storage.bytes / ov.storage.limit > 0.6 ? `<section class="card card-pad" style="border-color:${ov.storage.bytes / ov.storage.limit > 0.8 ? 'var(--bad)' : '#e6c36a'}"><b style="color:var(--ink)">File storage ${Math.round(ov.storage.bytes / ov.storage.limit * 100)}% full</b><p class="small muted" style="margin-top:4px">${CX.size(ov.storage.bytes)} of 5 GB used. Plan the move to Cloudflare R2 before it fills up. <a href="#/settings">Details</a></p></section>` : ''}
           <section class="card card-pad" style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;text-align:center">
             <div><div class="k-val num" style="font-family:var(--display);font-size:1.5rem;font-weight:700;color:var(--ink)">${ov.avgHours === null ? 'Not yet' : Math.round(ov.avgHours) + 'h'}</div><div class="small muted">Avg turnaround, 30 days</div></div>
             <div><div class="num" style="font-family:var(--display);font-size:1.5rem;font-weight:700;color:var(--ink)">${ov.deliveredLast30}</div><div class="small muted">Delivered, 30 days</div></div>
@@ -390,7 +394,7 @@
           <div class="field"><span>Revisions</span><div class="input input-sm num" style="background:var(--surface);display:flex;align-items:center">${o.revisions}</div></div></div>` : ''}
         </section>
         <section class="card"><div class="card-head"><h3>Brief</h3></div>
-          <dl class="specs">${[['Product', o.product], ['Size', o.size], ['Printer', o.printer], ['Formats', o.formats], ['Came through', o.channel], ['Ordered', dateTime(o.created_at)], ['Delivered', o.delivered_at ? dateTime(o.delivered_at) : ''], ['Approved', o.approved_at ? dateTime(o.approved_at) : '']].filter(x => x[1]).map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join('')}</dl>
+          <dl class="specs">${[['Product', o.product], ['Size', o.size], ['Printer', o.printer], ['Formats', o.formats], ['Came through', o.channel], ['Lead source', o.source], ['Ordered', dateTime(o.created_at)], ['Delivered', o.delivered_at ? dateTime(o.delivered_at) : ''], ['Approved', o.approved_at ? dateTime(o.approved_at) : '']].filter(x => x[1]).map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join('')}</dl>
           ${o.notes ? `<div class="notes">${esc(o.notes)}</div>` : ''}</section>
         ${admin() ? `<section class="card"><div class="card-head"><h3>Invoices</h3><button class="btn btn-line btn-sm" data-newinv>${icon('plus')} Create invoice</button></div>
           ${o.invoices && o.invoices.length ? `<div class="alist">${o.invoices.map(i => `<button class="aitem" data-inv="${i.id}"><div class="grow"><div class="ttl">${esc(i.number)}</div><div class="sub">${date(i.issued_at)}</div></div><span class="num small" style="font-weight:600">${esc(i.currency)} ${CX.amount(i.total)}</span>${invPill(i.status)}</button>`).join('')}</div>`
@@ -481,7 +485,7 @@
       </tbody></table></div>` : `<div class="empty">${icon('file')}<h3>No invoices ${st ? 'here' : 'yet'}</h3><p>Create one from an order (open the order, then Create invoice) or start a blank one.</p></div>`}</section>`;
     $$('[data-st]', main).forEach(b => b.addEventListener('click', () => setQ({ status: b.dataset.st })));
     $$('tr[data-i]', main).forEach(tr => { const open = () => invoiceEditor(tr.dataset.i, () => renderView(false)); tr.addEventListener('click', open); tr.addEventListener('keydown', e => e.key === 'Enter' && open()); });
-    $('#invSettings', main).addEventListener('click', invoiceSettings);
+    $('#invSettings', main).addEventListener('click', () => { location.hash = '#/settings'; });
     $('#invNew', main).addEventListener('click', async () => {
       const { shops } = await get('/team/shops');
       if (!shops.length) return toast('Add or invite a shop first.', true);
@@ -492,24 +496,52 @@
       });
     });
   }
-  async function invoiceSettings() {
-    let st; try { st = (await get('/team/settings')).settings; } catch (e) { return fail(e); }
-    modal(`<h2>Invoice details</h2><p class="muted small">Shown on every invoice. Changes apply to invoices you open or send from now on.</p>
-      <form id="sf" style="display:grid;gap:14px">
-        <div class="grid2"><label class="field"><span>Business name</span><input class="input" name="biz_name" value="${esc(st.biz_name)}" required></label>
-        <label class="field"><span>Tagline</span><input class="input" name="biz_tagline" value="${esc(st.biz_tagline)}"></label></div>
-        <div class="grid2"><label class="field"><span>Email on invoices</span><input class="input" type="email" name="biz_email" value="${esc(st.biz_email)}"></label>
-        <label class="field"><span>Website</span><input class="input" name="biz_website" value="${esc(st.biz_website)}"></label></div>
-        <label class="field"><span>Address or tax details (optional)</span><textarea class="input" name="biz_address" style="min-height:64px">${esc(st.biz_address)}</textarea></label>
-        <div class="grid2"><label class="field"><span>Invoice number prefix</span><input class="input" name="invoice_prefix" value="${esc(st.invoice_prefix)}" maxlength="10"></label>
-        <label class="field"><span>Default terms</span><input class="input" name="terms" value="${esc(st.terms)}"></label></div>
-        <label class="field"><span>Default payment note</span><textarea class="input" name="payment_note">${esc(st.payment_note)}</textarea></label>
-        <label class="field"><span>Default confidentiality note</span><textarea class="input" name="notes">${esc(st.notes)}</textarea></label>
-        <p class="form-msg" role="alert"></p>
-        <div class="modal-actions"><button type="button" class="btn btn-line" data-close>Cancel</button><button class="btn btn-primary" type="submit">Save details</button></div></form>`, (box, close) => {
-      box.classList.add('wide');
-      CX.submit($('#sf', box), async d => { await patch('/team/settings', d); close(); toast('Invoice details saved'); });
+  async function viewSettings(main) {
+    const { settings: st, status } = await get('/team/settings');
+    const pct = status.storage.limit ? Math.min(100, status.storage.bytes / status.storage.limit * 100) : 0;
+    const dot = on => `<span class="pill ${on ? 'st-delivered' : 'st-cancelled'}">${on ? 'Connected' : 'Not connected'}</span>`;
+    main.innerHTML = `<div class="top"><div><h1>Settings</h1><p class="muted">Notifications, invoices, payments, storage and backups. Admins only.</p></div></div>
+      <form id="setf" class="settings" novalidate>
+      <section class="card"><div class="card-head"><h2>${icon('mail')} Email</h2>${dot(status.email_ready)}</div><div class="card-pad set-grid">
+        <p class="small muted set-wide">${status.email_ready ? 'Clients get emails for order received, preview ready, files ready, new messages and invoices. Your team gets alerts for new orders, messages, approvals and change requests.'
+          : status.resend_key ? 'The Resend key is in place. Add the sender address below to switch email on.' : 'Email needs a free Resend account. Once its key is added in Cloudflare (see the setup guide), every email below switches on by itself.'}</p>
+        <label class="field"><span>Sender address</span><input class="input" name="mail_from" value="${esc(st.mail_from)}" placeholder="CubiX <orders@axys3d.com>"><small>Must use a domain verified in Resend.</small></label>
+        <label class="field"><span>Team alert emails</span><input class="input" name="alert_email" value="${esc(st.alert_email)}" placeholder="rizwan@..., attiq@..."><small>Comma separated. Empty means every admin.</small></label>
+        <div class="set-wide"><button type="button" class="btn btn-line btn-sm" id="testEmail">${icon('send')} Send me a test email</button></div></div></section>
+      <section class="card"><div class="card-head"><h2>${icon('zap')} Instant team alerts</h2>${dot(status.webhook)}</div><div class="card-pad set-grid">
+        <p class="small muted set-wide">Paste a Slack, Discord or Google Chat webhook link. The channel gets a message for every new order, client message, approval, change request and new shop.</p>
+        <label class="field set-wide"><span>Webhook link</span><input class="input" name="alert_webhook" value="${esc(st.alert_webhook)}" placeholder="https://hooks.slack.com/services/... or https://discord.com/api/webhooks/..."></label>
+        <details class="set-wide small muted"><summary style="cursor:pointer;font-weight:600">How do I get a webhook link?</summary><p style="margin-top:8px"><b>Discord:</b> channel settings, Integrations, Webhooks, New Webhook, Copy Webhook URL.<br><b>Slack:</b> api.slack.com/apps, Create New App, Incoming Webhooks, turn on, Add New Webhook, pick the channel, copy the link.<br><b>Google Chat:</b> space name, Apps and integrations, Webhooks, Add.</p></details>
+        <div class="set-wide"><button type="button" class="btn btn-line btn-sm" id="testAlert">${icon('zap')} Send a test alert</button></div></div></section>
+      <section class="card"><div class="card-head"><h2>${icon('file')} Invoice details</h2></div><div class="card-pad set-grid">
+        <label class="field"><span>Business name</span><input class="input" name="biz_name" value="${esc(st.biz_name)}" required></label>
+        <label class="field"><span>Tagline</span><input class="input" name="biz_tagline" value="${esc(st.biz_tagline)}"></label>
+        <label class="field"><span>Email on invoices</span><input class="input" type="email" name="biz_email" value="${esc(st.biz_email)}"></label>
+        <label class="field"><span>Website</span><input class="input" name="biz_website" value="${esc(st.biz_website)}"></label>
+        <label class="field set-wide"><span>Address or tax details (optional)</span><textarea class="input" name="biz_address" style="min-height:64px">${esc(st.biz_address)}</textarea></label>
+        <label class="field"><span>Invoice number prefix</span><input class="input" name="invoice_prefix" value="${esc(st.invoice_prefix)}" maxlength="10"></label>
+        <label class="field"><span>Default terms</span><input class="input" name="terms" value="${esc(st.terms)}"></label>
+        <label class="field set-wide"><span>Default payment note</span><textarea class="input" name="payment_note">${esc(st.payment_note)}</textarea></label>
+        <label class="field set-wide"><span>Default confidentiality note</span><textarea class="input" name="notes">${esc(st.notes)}</textarea></label></div></section>
+      <section class="card"><div class="card-head"><h2>${icon('card')} Online payment</h2>${dot(!!st.paypal_me)}</div><div class="card-pad set-grid">
+        <p class="small muted set-wide">With a PayPal.me name, every sent invoice shows a "Pay with PayPal" button for the exact amount. For Payoneer or Stripe, paste a payment request link into the invoice itself (Pay now link).</p>
+        <label class="field"><span>PayPal.me name</span><input class="input" name="paypal_me" value="${esc(st.paypal_me)}" placeholder="cubix3d"><small>From paypal.me/<b>name</b>. Leave empty to hide.</small></label></div></section>
+      <div class="set-save"><p class="form-msg" role="alert"></p><button class="btn btn-primary" type="submit">Save settings</button></div>
+      </form>
+      <section class="card" style="margin-top:18px"><div class="card-head"><h2>${icon('layers')} File storage</h2><span class="small muted">${status.storage.backend === 'R2' ? 'Cloudflare R2' : 'Free database storage'}</span></div><div class="card-pad" style="display:grid;gap:10px">
+        <div class="row" style="justify-content:space-between"><b class="num" style="color:var(--ink)">${CX.size(status.storage.bytes)}${status.storage.limit ? ' of 5 GB' : ''}</b><span class="small muted">${status.storage.files} files</span></div>
+        ${status.storage.limit ? `<div class="bar ${pct > 80 ? 'full' : pct > 60 ? 'mid' : ''}"><i style="width:${Math.max(1, pct)}%"></i></div><p class="small muted">Roughly 1,000 to 2,000 orders fit. When this passes 80%, enable Cloudflare R2 and the switch is one line in the code. Existing files keep working.</p>` : ''}</div></section>
+      <section class="card" style="margin-top:18px"><div class="card-head"><h2>${icon('download')} Backups</h2>${dot(status.backup_key)}</div><div class="card-pad" style="display:grid;gap:10px">
+        <p class="small muted">A weekly automatic backup of all orders, shops, people, messages, history, invoices and settings is saved to GitHub (kept 90 days). Cloudflare also keeps 7 days of full database history, files included. You can download a copy any time.</p>
+        <div><a class="btn btn-line btn-sm" href="/api/backup" download>${icon('download')} Download a backup now</a></div></div></section>`;
+    const form = $('#setf', main);
+    CX.submit(form, async (d, msg) => { await patch('/team/settings', d); toast('Settings saved'); renderView(false); });
+    const test = (btnId, path, okMsg) => $(btnId, main).addEventListener('click', async e => {
+      const b = e.currentTarget; CX.busy(b, true);
+      try { await patch('/team/settings', CX.formData(form)); const r = await post(path); toast(okMsg(r)); } catch (err) { fail(err); } finally { CX.busy(b, false); }
     });
+    test('#testEmail', '/team/settings/test-email', r => `Test email sent to ${r.to}`);
+    test('#testAlert', '/team/settings/test-alert', () => 'Test alert sent. Check your channel.');
   }
   async function invoiceEditor(id, onDone) {
     let r; try { r = await get('/team/invoices/' + id); } catch (e) { return fail(e); }
@@ -536,6 +568,7 @@
         <div class="field"><span>Line items</span><div class="inv-items" id="items">${inv.items.map(itemRow).join('')}</div>
           ${editable ? `<button type="button" class="btn btn-line btn-sm" id="addItem" style="justify-self:start">${icon('plus')} Add line</button>` : ''}</div>
         <div class="inv-total"><span class="muted small">Subtotal <b class="num" id="tSub"></b> · Tax <b class="num" id="tTax"></b></span><span>Total <b class="num" id="tTot"></b></span></div>
+        <label class="field"><span>Pay now link (optional)</span><input class="input" name="pay_url" value="${esc(inv.pay_url || '')}" placeholder="https://... a Payoneer, Stripe or PayPal payment request for this invoice" ${dis}><small>Shows a Pay now button on the invoice. Your PayPal.me (Settings) is shown automatically when set.</small></label>
         <label class="field"><span>Payment note</span><textarea class="input" name="payment_note" ${dis}>${esc(inv.payment_note || '')}</textarea></label>
         <label class="field"><span>Confidentiality note</span><textarea class="input" name="notes" style="min-height:64px" ${dis}>${esc(inv.notes || '')}</textarea></label>
         <p class="form-msg" role="alert"></p>

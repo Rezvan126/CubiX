@@ -102,3 +102,13 @@ table.items{width:100%;border-collapse:collapse;margin-top:10mm}
   .bar,.tip{display:none!important}
   .sheet{margin:0;box-shadow:none;width:210mm;height:297mm;min-height:0;page-break-after:avoid}
 }
+
+/* pay buttons (screen only) */
+#pay{display:inline-flex;gap:8px}
+.btn-pay{background:linear-gradient(90deg,#7c3aed,#0891b2);text-decoration:none}
+.btn-pay:hover{filter:brightness(1.08)}
+.btn-pay.alt{background:#fff;color:var(--ink);border:1px solid var(--line-2)}
+.pay-inline{display:flex;gap:8px;flex-wrap:wrap;margin-top:4px}
+.pay-inline .btn{height:36px;font-size:13px}
+@media (max-width:840px){.bar #pay{display:none}}
+@media print{#pay,.pay-inline{display:none!important}}

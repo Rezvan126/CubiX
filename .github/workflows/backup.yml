@@ -1,0 +1,28 @@
+name: Weekly backup
+
+# Every Monday at 02:17 UTC, and on demand from the Actions tab.
+on:
+  schedule:
+    - cron: '17 2 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download data backup
+        env:
+          BACKUP_KEY: ${{ secrets.CUBIX_BACKUP_KEY }}
+        run: |
+          test -n "$BACKUP_KEY" || { echo "Add the CUBIX_BACKUP_KEY secret first"; exit 1; }
+          curl -fsS -H "x-backup-key: $BACKUP_KEY" https://cubix.axys3d.com/api/backup -o cubix-backup.json
+          python3 -c "import json; d=json.load(open('cubix-backup.json')); print('Backup of', d['exported_at'], d['counts'])"
+      - name: Keep it for 90 days
+        uses: actions/upload-artifact@v4
+        with:
+          name: cubix-backup-${{ github.run_number }}
+          path: cubix-backup.json
+          retention-days: 90

@@ -9,6 +9,7 @@ const KEY = process.env.BOOTSTRAP_KEY || 'local-bootstrap-key';
 const SHOTS = new URL('./shots/', import.meta.url).pathname; fs.mkdirSync(SHOTS, { recursive: true });
 const SAMPLE = new URL('../public/assets/img/work/03-photo.webp', import.meta.url).pathname;
 const RENDER = new URL('../public/assets/img/work/03-a.webp', import.meta.url).pathname;
+const HEIC = new URL('./sample-iphone.heic', import.meta.url).pathname;
 const RENDER2 = new URL('../public/assets/img/work/03-b.webp', import.meta.url).pathname;
 
 let passed = 0, failed = 0; const out = [];
@@ -96,7 +97,9 @@ try {
   await client.fill('textarea[name=notes]', 'Keep the white fence and the red door.');
   await client.click('button[type=submit]');
   await client.waitForSelector('.form-msg.err'); check('order needs a file', (await client.textContent('.form-msg')).includes('photo'));
-  await client.setInputFiles('#dz input[type=file]', [SAMPLE]);
+  await client.setInputFiles('#dz input[type=file]', [SAMPLE, HEIC]);
+  await client.waitForSelector('.filelist div:has-text("sample-iphone.jpg")', { timeout: 30000 });
+  check('iPhone HEIC photo is converted to JPEG before upload', !(await client.isVisible('.filelist div:has-text("sample-iphone.heic")')));
   await client.waitForSelector('.filelist img'); await shot(client, '05-client-new-order'); await audit(client, 'client new order');
   await client.click('button[type=submit]');
   await client.waitForSelector('.steps');
@@ -261,6 +264,13 @@ try {
   await team.waitForSelector('tr[data-i] .inv-paid');
   check('invoice marked paid from the invoices page', true);
   await shot(team, '18-team-invoices'); await audit(team, 'team invoices');
+  await team.click('.nav a[data-v="settings"]'); await team.waitForSelector('#setf');
+  check('settings page shows email, alerts, invoices, payments, storage and backups', (await team.textContent('.main')).match(/Email[\s\S]*Instant team alerts[\s\S]*Invoice details[\s\S]*Online payment[\s\S]*File storage[\s\S]*Backups/) !== null);
+  await team.fill('#setf input[name=paypal_me]', 'cubix3d'); await team.click('#setf button[type=submit]'); await team.waitForSelector('.toast:has-text("Settings saved")');
+  check('settings save from the page', true);
+  await shot(team, '19-team-settings'); await audit(team, 'team settings');
+  const ovText = await (async () => { await team.click('.nav a[data-v=""]'); await team.waitForSelector('.kpis'); return team.textContent('.main'); })();
+  check('overview shows where orders come from', ovText.includes('Where orders come from'));
 
   // ---------------------------------------------------------------- modeler view
   const mctx = await browser.newContext({ viewport: { width: 1440, height: 900 } }); const mod = await mctx.newPage(); watch(mod, 'modeler');
@@ -310,7 +320,9 @@ try {
   const site = await browser.newPage({ viewport: { width: 1440, height: 900 } }); watch(site, 'site');
   await site.goto(BASE + '/start.html');
   await site.fill('#f-name', 'Mia'); await site.fill('#f-email', 'mia@shop.test'); await site.fill('#f-shop', 'etsy.com/shop/MiaMakes');
-  await site.setInputFiles('#f-files', [SAMPLE]);
+  await site.setInputFiles('#f-files', [SAMPLE, HEIC]);
+  await site.waitForSelector('#fileList li:has-text("sample-iphone.jpg")', { timeout: 30000 });
+  check('website form converts iPhone photos too', true);
   await site.click('#orderBtn'); await site.waitForFunction(() => /CX[A-Z0-9]{6}/.test(document.querySelector('#formMsg')?.textContent || document.body.innerText), null, { timeout: 15000 }).catch(() => {});
   const siteText = await site.textContent('body');
   check('website order form creates an order', /CX[A-Z0-9]{6}/.test(siteText), (await site.textContent('#formMsg').catch(() => '')));

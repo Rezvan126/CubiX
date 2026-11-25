@@ -449,3 +449,12 @@ a.kpi:hover{border-color:var(--ink);transform:translateY(-1px)}
 .inv-link span{display:inline-flex;align-items:center;gap:8px}
 .inv-item textarea[data-k=bullets]{min-height:92px!important}
 .side-user .who{min-width:60px}
+
+/* settings */
+.settings{display:grid;gap:18px;max-width:900px}
+.settings .card-head h2{display:flex;align-items:center;gap:9px}
+.set-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.set-wide{grid-column:1 / -1}
+.set-save{position:sticky;bottom:0;display:flex;justify-content:flex-end;align-items:center;gap:14px;padding:14px 0;background:linear-gradient(transparent,var(--paper) 30%)}
+.main > .card{max-width:900px}
+@media (max-width:640px){.set-grid{grid-template-columns:1fr}.set-save{bottom:64px}}

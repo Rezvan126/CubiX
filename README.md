@@ -72,6 +72,25 @@ Then sign in at `/team/`. Add your modelers under Team: each one gets a link to 
 - **Void:** a sent invoice can be voided. A draft can be deleted.
 - **Invoice details:** under **Invoices**, then **Invoice details**, set the business name, tagline, email, address, number prefix and the default notes.
 
+### Notifications, payments, backups and leads
+Everything below is under **Settings** in the dashboard (admins only).
+- **Email:** sent through Resend.
+  - Clients get: order received (website customers also get a link to set their portal password), preview ready, files ready, new message, invoice.
+  - The team gets an email for each new order, message, approval, change request and new shop.
+  - To switch on: add the `RESEND_API_KEY` secret in Cloudflare (Workers & Pages, cubix3d, Settings, Variables and Secrets), then fill in **Sender address** in Settings.
+  - Emails go out in the background, so they never slow anything down.
+- **Instant alerts:** paste a Slack, Discord or Google Chat webhook link, then use **Send a test alert**.
+- **Online payment:** a PayPal.me name adds "Pay with PayPal" for the exact amount on every sent invoice. Each invoice can also carry its own Pay now link (Payoneer, Stripe and so on).
+- **iPhone photos:** HEIC photos are converted to JPEG in the browser before upload (portal, website form, added files).
+- **Lead sources:** the website remembers where a visitor first came from (search engine, AI assistant, Etsy, an ad tagged with `utm_source`) and saves it on their order. The overview shows "Where orders come from".
+- **Storage:** Settings shows how much of the free 5 GB is used, and the overview warns from 60%.
+- **Backups:**
+  - **Download a backup now** in Settings gives a JSON copy of all data, without file contents.
+  - `.github/workflows/backup.yml` keeps a weekly copy for 90 days. It needs the `CUBIX_BACKUP_KEY` GitHub secret to match the `BACKUP_KEY` Cloudflare secret.
+  - Cloudflare also keeps 7 days of full database history (D1 Time Travel), files included.
+
+Migrations to run on the live database: `migrations/0002_invoices_thumbs_settings.sql`, `migrations/0003_sources_paylinks.sql`.
+
 ### Speed
 - Reads come from the nearest database copy (D1 read replication, with a bookmark per browser so people always see their own changes).
 - Each page needs one or two database trips.
@@ -90,12 +109,12 @@ npx wrangler d1 execute cubix-db --remote --file=migrations/0002_invoices_thumbs
 npm install
 ./tests/fresh.sh
 ```
-This starts a fresh local database and the server on http://localhost:8788. First create a `.dev.vars` file containing `BOOTSTRAP_KEY=local-bootstrap-key`. Then run:
+This starts a fresh local database and the server on http://localhost:8788. First create a `.dev.vars` file with `BOOTSTRAP_KEY=local-bootstrap-key` and `BACKUP_KEY=local-backup-key-0123456789abcdef`. Then run:
 
 ```bash
 npm run test:api
 ```
-That runs 179 checks on accounts, permissions, the order lifecycle, files, payments and capacity. For the full browser test (125 checks, desktop and phone, screenshots in `tests/shots/`), first run `./tests/fresh.sh` again, then:
+That runs 198 checks on accounts, permissions, the order lifecycle, files, payments and capacity. For the full browser test (132 checks, desktop and phone, screenshots in `tests/shots/`), first run `./tests/fresh.sh` again, then:
 
 ```bash
 npm run test:e2e

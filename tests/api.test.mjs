@@ -438,6 +438,60 @@ async function run() {
   r = await admin.post('/team/invoices', { order_id: aOrder });
   check('new prefix applies to the next invoice', r.data.invoice.number.startsWith('CBX-'), r.data.invoice?.number);
 
+  // ---------------- settings: notifications, payments, backups, sources
+  r = await admin.get('/team/settings');
+  check('settings report connection status and storage', r.status === 200 && r.data.status.email_ready === false && r.data.status.storage.backend === 'D1' && r.data.status.storage.bytes > 0, r.data.status);
+  r = await admin.patch('/team/settings', { alert_webhook: 'http://insecure.example/hook' });
+  check('webhook must be https', r.status === 422, r.data);
+  r = await admin.patch('/team/settings', { alert_email: 'a@b.co, not an email' });
+  check('alert emails are validated', r.status === 422, r.data);
+  r = await admin.patch('/team/settings', { mail_from: 'nonsense' });
+  check('sender address is validated', r.status === 422, r.data);
+  r = await admin.patch('/team/settings', { paypal_me: 'https://paypal.me/cubix3d', mail_from: 'CubiX <orders@example.com>', alert_email: 'ops@example.com, boss@example.com' });
+  check('payment and notification settings save (PayPal link trimmed to the name)', r.status === 200 && r.data.settings.paypal_me === 'cubix3d', r.data.settings);
+  r = await admin.post('/team/settings/test-email');
+  check('test email explains that email is not connected yet', r.status === 409 && /not connected/i.test(r.data.message), r.data);
+  r = await modeler.post('/team/settings/test-alert');
+  check('modelers cannot send test alerts', r.status === 403, r.status);
+  r = await modeler.get('/team/settings');
+  check('modelers cannot read settings (webhook stays private)', r.status === 403, r.status);
+  // pay links on invoices
+  {
+    const ri = await admin.post('/team/invoices', { shop_id: shopARow.id });
+    const iid = ri.data.invoice.id, tok = ri.data.invoice.token;
+    r = await admin.patch('/team/invoices/' + iid, { pay_url: 'javascript:alert(1)' });
+    check('pay link must be https', r.status === 422, r.data);
+    r = await admin.patch('/team/invoices/' + iid, { pay_url: 'https://pay.example.com/req/123', items: [{ title: 'Model', qty: 1, rate: 60 }] });
+    await admin.post(`/team/invoices/${iid}/send`);
+    r = await anon.get('/invoice/' + tok);
+    check('sent invoice offers Pay now and PayPal for the exact amount', r.data.invoice.pay_url === 'https://pay.example.com/req/123' && r.data.invoice.paypal_url === 'https://paypal.me/cubix3d/60.00USD', r.data.invoice);
+    await admin.post(`/team/invoices/${iid}/paid`, { paid_via: 'PayPal' });
+    r = await anon.get('/invoice/' + tok);
+    check('paid invoices no longer show pay buttons', !r.data.invoice.paypal_url, r.data.invoice);
+  }
+  // backups
+  r = await anon.get('/backup');
+  check('backup needs an admin or the backup key', r.status === 401, r.status);
+  r = await modeler.get('/backup');
+  check('modelers cannot download backups', r.status === 403, r.status);
+  {
+    const raw = await fetch(BASE + '/api/backup', { headers: { 'x-backup-key': 'wrong-key-wrong-key-wrong-key' } });
+    check('a wrong backup key is refused', raw.status === 401, raw.status);
+    const ok = await fetch(BASE + '/api/backup', { headers: { 'x-backup-key': process.env.BACKUP_KEY || 'local-backup-key-0123456789abcdef' } });
+    const d = await ok.json();
+    check('backup key downloads every table', ok.status === 200 && d.counts.orders >= 3 && d.counts.invoices >= 1 && d.tables.users.length >= 3 && !('thumb' in d.tables.files[0]), d.counts);
+    check('backup leaves out sessions and file contents', !('sessions' in d.tables) && !('file_chunks' in d.tables), Object.keys(d.tables));
+  }
+  r = await admin.get('/backup');
+  check('admin downloads a backup from the dashboard', r.status === 200 && r.headers.get('content-disposition').includes('cubix-backup-'), r.status);
+  // lead sources
+  r = await anon.post('/order', orderForm({ name: 'Zoe', email: em('zoe'), product: 'Sign', source: 'ChatGPT' }), { csrf: false, form: true });
+  const zoe = (await admin.get('/team/orders?q=' + r.data.id)).data.orders[0];
+  r = await admin.get('/team/orders/' + zoe.id);
+  check('order remembers its lead source', r.data.order.source === 'ChatGPT', r.data.order.source);
+  r = await admin.get('/team/overview');
+  check('overview counts orders by source and reports storage', r.data.sources.some(x => x.source === 'ChatGPT' && x.n === 1) && r.data.sources.some(x => x.source === 'Direct') && r.data.storage.bytes > 0, r.data.sources);
+
   // ---------------- password change
   r = await shopA.post('/auth/password', { current: 'wrong-one', password: 'newShopApass1' });
   check('password change needs the current password', r.status === 422, r.data);

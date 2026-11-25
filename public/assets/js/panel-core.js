@@ -146,6 +146,38 @@
   };
   CX.formData = form => Object.fromEntries(new FormData(form).entries());
 
+
+  // iPhone photos (HEIC) do not display in most browsers. Convert them to JPEG before upload.
+  // Safari decodes HEIC itself; elsewhere a converter (1.3 MB) is loaded only when a HEIC file is picked.
+  const isHeic = f => /image\/hei[cf]/i.test(f.type) || /\.(heic|heif)$/i.test(f.name);
+  let heicLib;
+  const loadHeic = () => heicLib || (heicLib = new Promise((ok, no) => { const sc = document.createElement('script'); sc.src = '/assets/vendor/heic2any.min.js'; sc.onload = () => ok(window.heic2any); sc.onerror = () => { heicLib = null; no(new Error('converter')); }; document.head.appendChild(sc); }));
+  async function toJpeg(f) {
+    const name = f.name.replace(/\.(heic|heif)$/i, '') + '.jpg';
+    try {
+      const bmp = await createImageBitmap(f);
+      const c = document.createElement('canvas'); c.width = bmp.width; c.height = bmp.height; c.getContext('2d').drawImage(bmp, 0, 0);
+      const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.9));
+      if (blob) return new File([blob], name, { type: 'image/jpeg' });
+    } catch {}
+    const lib = await loadHeic();
+    let out = await lib({ blob: f, toType: 'image/jpeg', quality: 0.9 });
+    if (Array.isArray(out)) out = out[0];
+    return new File([out], name, { type: 'image/jpeg' });
+  }
+  async function convertHeic(list, onStart) {
+    const files = [...list];
+    if (!files.some(isHeic)) return files;
+    onStart && onStart();
+    const out = [];
+    for (const f of files) {
+      if (!isHeic(f)) { out.push(f); continue; }
+      try { out.push(await toJpeg(f)); } catch { out.push(f); } // keep the original if conversion fails, the team can still download it
+    }
+    return out;
+  }
+  CX.convertHeic = convertHeic;
+
   // File picker with drag and drop, previews and removal. Returns { files() , clear() }.
   CX.dropzone = (el, { accept = '', hint = 'Photos, sketches, PDFs or STL files up to 25 MB each' } = {}) => {
     let list = [];
@@ -157,7 +189,8 @@
         <button type="button" class="icon-btn x" data-rm="${i}" aria-label="Remove ${CX.esc(f.name)}">${CX.icon('x')}</button></div>`).join('');
       out.querySelectorAll('img[data-i]').forEach(img => { const u = URL.createObjectURL(list[img.dataset.i]); img.src = u; img.onload = () => URL.revokeObjectURL(u); });
     };
-    const add = fs => {
+    const add = async picked => {
+      const fs = await convertHeic(picked, () => CX.toast('Converting iPhone photos, one moment'));
       for (const f of fs) {
         if (f.size > 25 * 1024 * 1024) { CX.toast(`${f.name} is over 25 MB. Email it to us or share a link in the notes.`, true); continue; }
         if (list.length >= 20) { CX.toast('Up to 20 files per upload.', true); break; }
@@ -165,7 +198,7 @@
       }
       render();
     };
-    input.addEventListener('change', () => { add(input.files); input.value = ''; });
+    input.addEventListener('change', async () => { const picked = [...input.files]; input.value = ''; await add(picked); });
     out.addEventListener('click', e => { const b = e.target.closest('[data-rm]'); if (b) { list.splice(+b.dataset.rm, 1); render(); } });
     ['dragenter', 'dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
     ['dragleave', 'drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));

@@ -47,6 +47,11 @@
     const st = document.getElementById('state');
     st.textContent = v.status === 'paid' ? 'Paid' : v.status === 'void' ? 'Void' : v.status === 'draft' ? 'Draft preview, not sent' : `Due: ${v.currency} ${amount(v.total)}`;
     st.className = 'state' + (v.status === 'paid' ? ' paid' : '');
+    const pays = [];
+    if (v.status === 'sent' && v.pay_url) pays.push(`<a class="btn btn-pay" href="${esc(v.pay_url)}" target="_blank" rel="noopener">Pay now</a>`);
+    if (v.status === 'sent' && v.paypal_url) pays.push(`<a class="btn btn-pay ${v.pay_url ? 'alt' : ''}" href="${esc(v.paypal_url)}" target="_blank" rel="noopener">Pay with PayPal</a>`);
+    document.getElementById('pay').innerHTML = pays.join('');
+    if (pays.length) { const n = root.querySelector('.notes div p'); if (n) n.insertAdjacentHTML('afterend', `<div class="pay-inline">${pays.join('')}</div>`); }
     document.getElementById('bar').hidden = false;
     document.getElementById('tip').hidden = false;
   }

@@ -69,7 +69,8 @@ CREATE TABLE IF NOT EXISTS orders (
   created_at   TEXT NOT NULL,
   updated_at   TEXT NOT NULL,
   delivered_at TEXT,
-  approved_at  TEXT
+  approved_at  TEXT,
+  source       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 CREATE INDEX IF NOT EXISTS idx_orders_shop ON orders(shop_id);
@@ -150,6 +151,7 @@ CREATE TABLE IF NOT EXISTS invoices (
   sent_at       TEXT,
   paid_at       TEXT,
   paid_via      TEXT,
+  pay_url       TEXT,
   created_by    TEXT REFERENCES users(id),
   created_at    TEXT NOT NULL,
   updated_at    TEXT NOT NULL

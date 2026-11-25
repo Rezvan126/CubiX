@@ -279,7 +279,39 @@
       });
       if (files.length) drop.classList.remove('invalid');
     };
-    const add = fl => {
+
+    // iPhone photos (HEIC) do not display in most browsers. Convert them to JPEG before upload.
+    // Safari decodes HEIC itself; elsewhere a converter (1.3 MB) is loaded only when a HEIC file is picked.
+    const isHeic = f => /image\/hei[cf]/i.test(f.type) || /\.(heic|heif)$/i.test(f.name);
+    let heicLib;
+    const loadHeic = () => heicLib || (heicLib = new Promise((ok, no) => { const sc = document.createElement('script'); sc.src = '/assets/vendor/heic2any.min.js'; sc.onload = () => ok(window.heic2any); sc.onerror = () => { heicLib = null; no(new Error('converter')); }; document.head.appendChild(sc); }));
+    async function toJpeg(f) {
+      const name = f.name.replace(/\.(heic|heif)$/i, '') + '.jpg';
+      try {
+        const bmp = await createImageBitmap(f);
+        const c = document.createElement('canvas'); c.width = bmp.width; c.height = bmp.height; c.getContext('2d').drawImage(bmp, 0, 0);
+        const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.9));
+        if (blob) return new File([blob], name, { type: 'image/jpeg' });
+      } catch {}
+      const lib = await loadHeic();
+      let out = await lib({ blob: f, toType: 'image/jpeg', quality: 0.9 });
+      if (Array.isArray(out)) out = out[0];
+      return new File([out], name, { type: 'image/jpeg' });
+    }
+    async function convertHeic(list, onStart) {
+      const files = [...list];
+      if (!files.some(isHeic)) return files;
+      onStart && onStart();
+      const out = [];
+      for (const f of files) {
+        if (!isHeic(f)) { out.push(f); continue; }
+        try { out.push(await toJpeg(f)); } catch { out.push(f); } // keep the original if conversion fails, the team can still download it
+      }
+      return out;
+    }
+    const add = async picked => {
+      const fl = await convertHeic(picked, () => say('Converting iPhone photos, one moment.'));
+      if (msg.textContent.startsWith('Converting')) say('');
       for (const f of fl) {
         if (files.length >= MAX_FILES) { say('Up to 20 files. Email the rest to us.', 'err'); break; }
         if (f.size > MAX_FILE) { say(`${f.name} is over 25 MB. Email it to us or share a download link.`, 'err'); continue; }
@@ -287,7 +319,7 @@
       }
       render();
     };
-    input.addEventListener('change', () => { add(input.files); input.value = ''; });
+    input.addEventListener('change', async () => { const picked = [...input.files]; input.value = ''; await add(picked); });
     ['dragenter', 'dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
     ['dragleave', 'drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
     drop.addEventListener('drop', e => add(e.dataTransfer.files));
@@ -308,6 +340,7 @@
       const fd = new FormData(form); fd.delete('files'); fd.set('formats', fd.getAll('formats').join(', '));
       fd.set('notes', `Product: ${fd.get('product')}\n${fd.get('notes') || ''}`);
       files.forEach(f => fd.append('files', f, f.name));
+      fd.set('source', leadSource());
       btn.disabled = true; btn.firstChild.textContent = 'Sending ';
       await addThumbs(fd, files);
       const fallback = () => {
@@ -413,4 +446,31 @@ window.CUBIX = {
     s.setAttribute('data-cf-beacon', JSON.stringify({ token: C.analyticsToken })); document.head.appendChild(s);
     document.addEventListener('click', e => { const a = e.target.closest('a[href="start.html"]'); if (a && window.__cfBeacon) { /* page views are tracked automatically */ } });
   }
+})();
+
+/* Lead source: remember where a visitor first came from (campaign tag, search engine, AI assistant or website) for 90 days,
+   and send it with their order so the dashboard shows which channels bring orders. Stored only in this browser. */
+function leadSource() {
+  try { const v = JSON.parse(localStorage.getItem('cx_src') || 'null'); if (v && Date.now() - v.t < 90 * 864e5) return v.s; } catch {}
+  return 'Direct';
+}
+(function () {
+  try {
+    const q = new URLSearchParams(location.search);
+    let s = '';
+    const utm = q.get('utm_source') || q.get('ref') || q.get('source');
+    if (utm) s = [utm, q.get('utm_medium'), q.get('utm_campaign')].filter(Boolean).join(' / ');
+    else if (document.referrer) {
+      const h = new URL(document.referrer).hostname.replace(/^www\./, '');
+      if (h && h !== location.hostname && !/(^|\.)axys3d\.com$|pages\.dev$/.test(h)) {
+        const known = [[/google\./, 'Google'], [/bing\.com/, 'Bing'], [/duckduckgo/, 'DuckDuckGo'], [/yahoo\./, 'Yahoo'], [/chatgpt\.com|openai\.com/, 'ChatGPT'], [/perplexity/, 'Perplexity'],
+          [/claude\.ai/, 'Claude'], [/gemini\.google|bard\.google/, 'Gemini'], [/copilot\.microsoft/, 'Copilot'], [/etsy\.com/, 'Etsy'], [/upwork/, 'Upwork'], [/fiverr/, 'Fiverr'],
+          [/facebook|fb\.com/, 'Facebook'], [/instagram/, 'Instagram'], [/linkedin|lnkd\.in/, 'LinkedIn'], [/reddit/, 'Reddit'], [/youtube|youtu\.be/, 'YouTube'], [/pinterest/, 'Pinterest'],
+          [/t\.co$|twitter|x\.com/, 'X'], [/tiktok/, 'TikTok'], [/whatsapp/, 'WhatsApp']];
+        const k = known.find(([re]) => re.test(h)); s = k ? k[1] : h;
+      }
+    }
+    const cur = JSON.parse(localStorage.getItem('cx_src') || 'null');
+    if (s && (!cur || Date.now() - cur.t > 90 * 864e5)) localStorage.setItem('cx_src', JSON.stringify({ s: s.slice(0, 100), t: Date.now() }));
+  } catch {}
 })();

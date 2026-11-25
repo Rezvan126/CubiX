@@ -2,9 +2,10 @@
 import {
   STATUSES, OPEN_STATUSES, PLANS, TURNAROUND_HOURS, HttpError, json, now, addHours, uid, orderCode,
   hashPassword, verifyPassword, clean, validEmail, validPassword, createSession, clearCookie, getUser,
-  destroySession, makeLinkToken, useLinkToken, siteUrl, sendEmail, notifyTeam, logEvent, storeFiles,
+  destroySession, makeLinkToken, useLinkToken, siteUrl, logEvent, storeFiles,
   readBody, field, sha256, readFile, thumbMap, removeBlobs,
 } from '../_lib/core.js';
+import { later, alertTeam, sendMail, emailHtml, emailReady, notifySettings } from '../_lib/notify.js';
 
 const routes = [];
 const on = (method, pattern, roles, handler) => {
@@ -20,7 +21,7 @@ export async function onRequest(context) {
     const bookmark = request.headers.get('x-d1-bookmark');
     const db = typeof env.DB.withSession === 'function'
       ? env.DB.withSession(bookmark && bookmark.length < 200 && /^[\w-]+$/.test(bookmark) ? bookmark : 'first-unconstrained') : env.DB;
-    context.env = env = { ...env, DB: db };
+    context.env = env = { ...env, DB: db, __waitUntil: p => context.waitUntil(p) };
     const url = new URL(request.url);
     const path = url.pathname.replace(/^\/api/, '').replace(/\/$/, '') || '/';
     const route = routes.find(r => r.method === request.method && r.re.test(path));
@@ -48,6 +49,14 @@ export async function onRequest(context) {
 const one = (env, sql, ...b) => env.DB.prepare(sql).bind(...b).first();
 const all = async (env, sql, ...b) => (await env.DB.prepare(sql).bind(...b).all()).results;
 const isTeam = u => u && (u.role === 'admin' || u.role === 'modeler');
+const escH = t => String(t ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const teamUrl = (site, orderId) => `${site}/team/#/orders?o=${orderId}`;
+const portalUrl = (site, orderId) => `${site}/app/#/orders/${orderId}`;
+// Email the shop owner of an order, in the background.
+function mailClient(env, site, to, name, subject, { heading, intro, button, lines, outro }) {
+  const text = `Hi ${name},\n\n${intro.replace(/<[^>]+>/g, '')}${lines ? '\n\n' + lines.map(([k, v]) => `${k}: ${v}`).join('\n') : ''}${button ? `\n\n${button.label}: ${button.url}` : ''}${outro ? '\n\n' + outro.replace(/<[^>]+>/g, '') : ''}\n\nCubiX`;
+  return later(env, sendMail(env, to, subject, text, emailHtml(site, { heading, intro: `Hi ${escH(name)},<br><br>${intro}`, button, lines, outro })));
+}
 // Simple limit per visitor for public forms, stored in login_attempts under a namespaced key.
 async function rateLimit(env, request, what, max, minutes) {
   const ip = request.headers.get('cf-connecting-ip') || request.headers.get('x-forwarded-for') || 'local';
@@ -89,20 +98,21 @@ async function orderBundle(env, id, user) {
 }
 function dueFor(priority, from = now()) { return addHours(from, priority === 'rush' ? 24 : TURNAROUND_HOURS); }
 
-async function createOrder(env, { shop, userId, body, files }) {
+async function createOrder(env, { shop, userId, body, files, site, orderer }) {
   const id = uid('o_'), at = now();
   const isFree = shop.free_used ? 0 : 1;
   const product = clean(field(body, 'product'), 80) || 'Custom model';
   const title = clean(field(body, 'title'), 120) || product;
   const formats = body instanceof FormData ? body.getAll('formats').map(x => clean(x, 40)).filter(Boolean).join(', ') : clean(field(body, 'formats'), 200);
   const priority = field(body, 'priority') === 'rush' ? 'rush' : 'normal';
+  const source = clean(field(body, 'source'), 120) || null;
   let code = orderCode();
   for (let attempt = 0; ; attempt++) {
     try {
       await env.DB.batch([
-        env.DB.prepare(`INSERT INTO orders (id, code, shop_id, created_by, title, product, size, printer, formats, notes, channel, status, priority, is_free, due_at, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?, ?, ?, ?)`).bind(id, code, shop.id, userId, title, product, clean(field(body, 'size'), 120),
-          clean(field(body, 'printer'), 120), formats, clean(field(body, 'notes'), 4000), clean(field(body, 'channel'), 40) || 'Direct', priority, isFree, dueFor(priority, at), at, at),
+        env.DB.prepare(`INSERT INTO orders (id, code, shop_id, created_by, title, product, size, printer, formats, notes, channel, status, priority, is_free, due_at, created_at, updated_at, source)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?, ?, ?, ?, ?)`).bind(id, code, shop.id, userId, title, product, clean(field(body, 'size'), 120),
+          clean(field(body, 'printer'), 120), formats, clean(field(body, 'notes'), 4000), clean(field(body, 'channel'), 40) || 'Direct', priority, isFree, dueFor(priority, at), at, at, source),
         env.DB.prepare('UPDATE shops SET free_used = 1 WHERE id = ?').bind(shop.id),
         env.DB.prepare('INSERT INTO events (order_id, user_id, type, detail, created_at) VALUES (?, ?, ?, ?, ?)').bind(id, userId, 'created', isFree ? 'Free first model' : null, at),
       ]);
@@ -111,7 +121,18 @@ async function createOrder(env, { shop, userId, body, files }) {
   }
   try { await storeFiles(env, id, files, 'reference', userId, thumbMap(body)); }
   catch (e) { await env.DB.batch([env.DB.prepare('DELETE FROM events WHERE order_id = ?').bind(id), env.DB.prepare('DELETE FROM orders WHERE id = ?').bind(id), env.DB.prepare('UPDATE shops SET free_used = ? WHERE id = ?').bind(shop.free_used, shop.id)]); throw e; }
-  await notifyTeam(env, `New order ${code} from ${shop.name}${isFree ? ' (free first model)' : ''}: ${title}`);
+  const due = dueFor(priority, at);
+  later(env, alertTeam(env, site, { title: `New order ${code}${isFree ? ' (free first model)' : ''}`, text: `${shop.name}: ${title}${priority === 'rush' ? ' (rush)' : ''}${source ? `\nSource: ${source}` : ''}`, url: teamUrl(site, id) }));
+  if (orderer && orderer.email) {
+    let button = { label: 'Track your order', url: portalUrl(site, id) };
+    if (orderer.needsLogin) { const t = await makeLinkToken(env, orderer.id, 'setup', 24 * 7); button = { label: 'Set a password and track your order', url: `${site}/app/#/setup/${t}` }; }
+    mailClient(env, site, orderer.email, orderer.name, `We received your order ${code}`, {
+      heading: `Order ${code} received`,
+      intro: `Thank you. Your order is in the queue and a modeler will pick it up shortly. You get a preview by ${new Date(due).toUTCString().slice(0, 22)} UTC at the latest.${isFree ? '<br><br><b>This one is free</b>, your first model is on us.' : ''}`,
+      lines: [['Order', code], ['What', title], ['Turnaround', priority === 'rush' ? 'Rush, within 24 hours' : 'Within 48 hours']],
+      button, outro: 'Reply to this email or write in your portal if you want to add anything.',
+    });
+  }
   return { id, code, free: !!isFree };
 }
 
@@ -154,7 +175,7 @@ on('POST', '/auth/signup', PUBLIC, async ({ request, env }) => {
     env.DB.prepare(`INSERT INTO users (id, email, name, role, shop_id, password_hash, password_salt, created_at) VALUES (?, ?, ?, 'client', ?, ?, ?, ?)`).bind(userId, email, name, shopId, p.hash, p.salt, at),
   ]);
   const s = await createSession(env, userId);
-  await notifyTeam(env, `New shop signed up: ${shopName} (${email})`);
+  later(env, alertTeam(env, siteUrl(request, env), { title: 'New shop signed up', text: `${shopName} (${email})`, url: `${siteUrl(request, env)}/team/#/shops` }));
   return json({ ok: true }, 201, { 'set-cookie': s.cookie });
 });
 on('POST', '/auth/forgot', PUBLIC, async ({ request, env }) => {
@@ -164,7 +185,7 @@ on('POST', '/auth/forgot', PUBLIC, async ({ request, env }) => {
   if (u) {
     const t = await makeLinkToken(env, u.id, 'reset', 2);
     const link = `${siteUrl(request, env)}/app/#/setup/${t}`;
-    await sendEmail(env, email, 'Reset your CubiX password', `Hi ${u.name},\n\nUse this link within 2 hours to set a new password:\n${link}\n\nIf you did not ask for this, ignore this email.`);
+    mailClient(env, siteUrl(request, env), email, u.name, 'Reset your CubiX password', { heading: 'Reset your password', intro: 'Use the button below within 2 hours to choose a new password.', button: { label: 'Set a new password', url: link }, outro: 'If you did not ask for this, ignore this email. Your password stays the same.' });
   }
   return json({ ok: true }); // same answer either way, so emails cannot be probed
 });
@@ -232,7 +253,7 @@ on('POST', '/order', PUBLIC, async ({ request, env }) => {
       env.DB.prepare(`INSERT INTO users (id, email, name, role, shop_id, created_at) VALUES (?, ?, ?, 'client', ?, ?)`).bind(u.id, email, name, shop.id, now()),
     ]);
   }
-  const r = await createOrder(env, { shop, userId: u.id, body: b, files });
+  const r = await createOrder(env, { shop, userId: u.id, body: b, files, site: siteUrl(request, env), orderer: { id: u.id, email, name: u.name || name, needsLogin: !u.password_hash } });
   return json({ ok: true, id: r.code, free: r.free }, 201);
 });
 
@@ -251,7 +272,7 @@ on('POST', '/client/orders', CLIENT, async ({ request, env, user }) => {
   const files = b.getAll('files');
   if (!files.some(f => typeof f === 'object' && f.size > 0)) throw new HttpError(422, 'no_files', 'Add at least one photo or file.');
   const shop = await one(env, 'SELECT * FROM shops WHERE id = ?', user.shop_id);
-  const r = await createOrder(env, { shop, userId: user.id, body: b, files });
+  const r = await createOrder(env, { shop, userId: user.id, body: b, files, site: siteUrl(request, env), orderer: { id: user.id, email: user.email, name: user.name } });
   return json({ ok: true, ...r }, 201);
 });
 on('GET', '/client/orders/:id', CLIENT, async ({ env, params, user }) => json({ ok: true, order: await orderBundle(env, params.id, user) }));
@@ -262,7 +283,7 @@ on('POST', '/client/orders/:id/messages', CLIENT, async ({ request, env, params,
     env.DB.prepare('INSERT INTO messages (id, order_id, user_id, body, internal, created_at) VALUES (?, ?, ?, ?, 0, ?)').bind(uid('m_'), o.id, user.id, body, now()),
     env.DB.prepare('UPDATE orders SET updated_at = ? WHERE id = ?').bind(now(), o.id),
   ]);
-  await notifyTeam(env, `Message on ${o.code} from ${o.shop_name}: ${body.slice(0, 200)}`);
+  later(env, alertTeam(env, siteUrl(request, env), { title: `Message on ${o.code}`, text: `${o.shop_name}: ${body.slice(0, 400)}`, url: teamUrl(siteUrl(request, env), o.id) }));
   return json({ ok: true }, 201);
 });
 on('POST', '/client/orders/:id/files', CLIENT, async ({ request, env, params, user }) => {
@@ -276,10 +297,10 @@ on('POST', '/client/orders/:id/files', CLIENT, async ({ request, env, params, us
     env.DB.prepare('UPDATE orders SET updated_at = ? WHERE id = ?').bind(now(), o.id),
     env.DB.prepare('INSERT INTO events (order_id, user_id, type, detail, created_at) VALUES (?, ?, ?, ?, ?)').bind(o.id, user.id, 'files', `Shop added ${r.files.length} file(s)`, now()),
   ]);
-  await notifyTeam(env, `${o.shop_name} added ${r.files.length} file(s) to ${o.code}`);
+  later(env, alertTeam(env, siteUrl(request, env), { title: `New files on ${o.code}`, text: `${o.shop_name} added ${r.files.length} file(s).`, url: teamUrl(siteUrl(request, env), o.id) }));
   return json({ ok: true, files: r.files }, 201);
 });
-on('POST', '/client/orders/:id/approve', CLIENT, async ({ env, params, user }) => {
+on('POST', '/client/orders/:id/approve', CLIENT, async ({ request, env, params, user }) => {
   const o = await loadOrder(env, params.id, user);
   if (!['preview', 'delivered'].includes(o.status)) throw new HttpError(409, 'bad_state', 'There is nothing to approve yet.');
   const status = o.status === 'preview' ? 'approved' : 'delivered';
@@ -287,7 +308,7 @@ on('POST', '/client/orders/:id/approve', CLIENT, async ({ env, params, user }) =
     env.DB.prepare('UPDATE orders SET status = ?, approved_at = ?, updated_at = ? WHERE id = ?').bind(status, now(), now(), o.id),
     env.DB.prepare('INSERT INTO events (order_id, user_id, type, detail, created_at) VALUES (?, ?, ?, NULL, ?)').bind(o.id, user.id, 'approved', now()),
   ]);
-  await notifyTeam(env, `${o.code} approved by ${o.shop_name}`);
+  later(env, alertTeam(env, siteUrl(request, env), { title: `${o.code} approved`, text: `${o.shop_name} approved the ${status === 'approved' ? 'preview. Prepare the final files.' : 'delivered files.'}`, url: teamUrl(siteUrl(request, env), o.id) }));
   return json({ ok: true, status });
 });
 on('POST', '/client/orders/:id/revision', CLIENT, async ({ request, env, params, user }) => {
@@ -300,7 +321,7 @@ on('POST', '/client/orders/:id/revision', CLIENT, async ({ request, env, params,
     env.DB.prepare('INSERT INTO messages (id, order_id, user_id, body, internal, created_at) VALUES (?, ?, ?, ?, 0, ?)').bind(uid('m_'), o.id, user.id, 'Revision request: ' + body, at),
     env.DB.prepare('INSERT INTO events (order_id, user_id, type, detail, created_at) VALUES (?, ?, ?, ?, ?)').bind(o.id, user.id, 'revision', body.slice(0, 200), at),
   ]);
-  await notifyTeam(env, `Revision requested on ${o.code}: ${body.slice(0, 200)}`);
+  later(env, alertTeam(env, siteUrl(request, env), { title: `Changes requested on ${o.code}`, text: `${o.shop_name}: ${body.slice(0, 400)}`, url: teamUrl(siteUrl(request, env), o.id) }));
   return json({ ok: true });
 });
 
@@ -354,6 +375,8 @@ on('GET', '/team/overview', TEAM, async ({ env }) => {
         (SELECT COUNT(*) FROM orders o WHERE o.assignee_id = u.id AND o.delivered_at >= ?) AS delivered_7d
       FROM users u WHERE u.role IN ('admin','modeler') AND u.active = 1 ORDER BY u.name`, ...open, ...open, t, addHours(t, -24 * 7)),
     q('SELECT COUNT(*) AS n FROM shops WHERE created_at >= ?', monthStart),
+    q("SELECT COALESCE(NULLIF(source, ''), 'Direct') AS source, COUNT(*) AS n FROM orders WHERE created_at >= ? GROUP BY 1 ORDER BY n DESC LIMIT 8", addHours(t, -24 * 30)),
+    q('SELECT COALESCE(SUM(size), 0) AS bytes FROM files'),
     q(`SELECT o.id, o.code, o.title, o.status, o.due_at, o.priority, o.is_free, s.name AS shop_name, a.name AS assignee_name
       FROM orders o JOIN shops s ON s.id = o.shop_id LEFT JOIN users a ON a.id = o.assignee_id
       WHERE o.status IN (${ph}) AND (o.due_at < ? OR o.assignee_id IS NULL OR o.status = 'revisions') ORDER BY o.due_at LIMIT 12`, ...open, soon),
@@ -362,7 +385,8 @@ on('GET', '/team/overview', TEAM, async ({ env }) => {
   return json({ ok: true, byStatus: r[0].results, overdue: c.overdue || 0, dueSoon: c.due_soon || 0, unassigned: c.unassigned || 0,
     awaiting: { n: c.awaiting_n || 0, total: c.awaiting_total }, paidMonth: { n: c.paid_n || 0, total: c.paid_total },
     avgHours: d.n ? d.avg_h : null, deliveredLast30: d.n, team, capacity: team.reduce((a, m) => a + m.capacity, 0), load: team.reduce((a, m) => a + m.open, 0),
-    newShops: r[4].results[0].n, attention: r[5].results });
+    newShops: r[4].results[0].n, attention: r[7].results, sources: r[5].results,
+    storage: { bytes: r[6].results[0].bytes, limit: env.FILES ? null : STORAGE_LIMIT } });
 });
 
 on('GET', '/team/orders', TEAM, async ({ env, url, user }) => {
@@ -469,7 +493,7 @@ on('POST', '/team/orders/:id/messages', TEAM, async ({ request, env, params, use
   ]);
   if (!internal) {
     const c = await one(env, 'SELECT email, name FROM users WHERE id = ?', o.created_by);
-    if (c) await sendEmail(env, c.email, `New message on order ${o.code}`, `Hi ${c.name},\n\n${body}\n\nReply in your CubiX portal: ${siteUrl(request, env)}/app/#/orders/${o.id}`);
+    if (c) mailClient(env, siteUrl(request, env), c.email, c.name, `New message on order ${o.code}`, { heading: `New message on ${o.code}`, intro: escH(body).replace(/\n/g, '<br>'), button: { label: 'Reply in your portal', url: portalUrl(siteUrl(request, env), o.id) } });
   }
   return json({ ok: true }, 201);
 });
@@ -491,8 +515,9 @@ on('POST', '/team/orders/:id/files', TEAM, async ({ request, env, params, user }
     ...(status !== o.status ? [env.DB.prepare('INSERT INTO events (order_id, user_id, type, detail, created_at) VALUES (?, ?, ?, ?, ?)').bind(o.id, user.id, 'status', `${o.status} to ${status}`, at)] : []),
   ]);
   const c = await one(env, 'SELECT email, name FROM users WHERE id = ?', o.created_by);
-  if (c) await sendEmail(env, c.email, kind === 'final' ? `Your files for ${o.code} are ready` : `Preview ready for ${o.code}`,
-    `Hi ${c.name},\n\n${kind === 'final' ? 'Your print ready files are ready to download.' : 'A preview of your model is ready. Approve it or ask for changes.'}\n\n${siteUrl(request, env)}/app/#/orders/${o.id}`);
+  if (c && kind !== 'reference') mailClient(env, siteUrl(request, env), c.email, c.name, kind === 'final' ? `Your files for ${o.code} are ready` : `Preview ready for ${o.code}`, kind === 'final'
+    ? { heading: 'Your print ready files are ready', intro: `The final files for <b>${escH(o.title)}</b> are ready to download.`, lines: [['Order', o.code], ['Files', `${r.files.length} file(s), version ${r.version}`]], button: { label: 'Download your files', url: portalUrl(siteUrl(request, env), o.id) }, outro: 'Something not printing right? Reply in the portal and we fix it.' }
+    : { heading: 'Your preview is ready', intro: `Have a look at the preview for <b>${escH(o.title)}</b>. Approve it, or tell us what to change.`, lines: [['Order', o.code], ['Version', String(r.version)]], button: { label: 'Review the preview', url: portalUrl(siteUrl(request, env), o.id) } });
   return json({ ok: true, version: r.version, status }, 201);
 });
 
@@ -529,7 +554,8 @@ on('POST', '/team/shops', ADMIN, async ({ request, env }) => {
   ]);
   const t = await makeLinkToken(env, userId, 'setup', 24 * 7);
   const link = `${siteUrl(request, env)}/app/#/setup/${t}`;
-  const emailed = await sendEmail(env, email, 'Your CubiX client portal', `Hi ${contact || name},\n\nYour CubiX portal is ready. Set your password here (valid for 7 days):\n${link}\n\nYour first model is free.`);
+  const emailed = await sendMail(env, email, 'Your CubiX client portal', `Hi ${contact || name},\n\nYour CubiX client portal is ready. Set a password with the button below (the link works for 7 days). Your first model is free.\n${link}`,
+    emailHtml(siteUrl(request, env), { heading: 'Your CubiX portal is ready', intro: `Hi ${escH(contact || name)},<br><br>Your CubiX client portal is ready. Set a password with the button below (the link works for 7 days). Your first model is free.`, button: { label: 'Set my password', url: link } }));
   return json({ ok: true, id: shopId, link, emailed }, 201);
 });
 on('PATCH', '/team/shops/:id', ADMIN, async ({ request, env, params }) => {
@@ -548,7 +574,8 @@ on('POST', '/team/users/:id/link', ADMIN, async ({ request, env, params }) => {
   if (!u) throw new HttpError(404, 'not_found');
   const t = await makeLinkToken(env, u.id, 'setup', 72);
   const link = `${siteUrl(request, env)}/${u.role === 'client' ? 'app' : 'team'}/#/setup/${t}`;
-  const emailed = await sendEmail(env, u.email, 'Your CubiX login', `Hi ${u.name},\n\nSet your password here (valid for 3 days):\n${link}`);
+  const emailed = await sendMail(env, u.email, 'Your CubiX login', `Hi ${u.name},\n\nSet your password with the button below. The link works once, for 3 days.\n${link}`,
+    emailHtml(siteUrl(request, env), { heading: 'Your CubiX login', intro: `Hi ${escH(u.name)},<br><br>Set your password with the button below. The link works once, for 3 days.`, button: { label: 'Set my password', url: link } }));
   return json({ ok: true, link, emailed });
 });
 
@@ -566,7 +593,8 @@ on('POST', '/team/members', ADMIN, async ({ request, env }) => {
   await env.DB.prepare('INSERT INTO users (id, email, name, role, capacity, created_at) VALUES (?, ?, ?, ?, ?, ?)').bind(id, email, name, role, capacity, now()).run();
   const t = await makeLinkToken(env, id, 'setup', 72);
   const link = `${siteUrl(request, env)}/team/#/setup/${t}`;
-  const emailed = await sendEmail(env, email, 'You are invited to the CubiX team', `Hi ${name},\n\nSet your password here (valid for 3 days):\n${link}`);
+  const emailed = await sendMail(env, email, 'You are invited to the CubiX team', `Hi ${name},\n\nYou have been invited to the CubiX production dashboard. Set your password with the button below (valid for 3 days).\n${link}`,
+    emailHtml(siteUrl(request, env), { heading: 'Welcome to the CubiX team', intro: `Hi ${escH(name)},<br><br>You have been invited to the CubiX production dashboard. Set your password with the button below (valid for 3 days).`, button: { label: 'Join the team', url: link } }));
   return json({ ok: true, id, link, emailed }, 201);
 });
 on('PATCH', '/team/members/:id', ADMIN, async ({ request, env, params, user }) => {
@@ -595,7 +623,13 @@ const SETTING_DEFAULTS = {
   terms: 'Due on receipt',
   payment_note: 'Pay through Upwork, Fiverr, Payoneer or direct bank transfer. We send the account details with this invoice. Please quote the invoice number with your payment. Transfer fees charged by the sending bank are payable by the sender.',
   notes: 'All reference material and delivered files remain confidential. Nothing is published, added to a portfolio or shared outside the project team without written approval.',
+  // notifications and payments
+  alert_webhook: '',
+  alert_email: '',
+  mail_from: '',
+  paypal_me: '',
 };
+const STORAGE_LIMIT = 5 * 1024 * 1024 * 1024; // D1 free plan
 async function getSettings(env) {
   const rows = await all(env, 'SELECT key, value FROM settings');
   const out = { ...SETTING_DEFAULTS };
@@ -683,6 +717,7 @@ on('PATCH', '/team/invoices/:id', ADMIN, async ({ request, env, params }) => {
   const inv = await loadInvoice(env, params.id), b = await readBody(request);
   if (!['draft', 'sent'].includes(inv.status)) throw new HttpError(409, 'bad_state', 'Paid or void invoices cannot be edited.');
   const set = [], vals = [];
+  if (b.pay_url !== undefined) { const u2 = clean(b.pay_url, 500); if (u2 && !/^https:\/\/[^\s]+$/.test(u2)) throw new HttpError(422, 'invalid', 'The payment link must start with https://'); set.push('pay_url = ?'); vals.push(u2 || null); }
   for (const [k, max] of [['bill_name', 160], ['bill_email', 200], ['bill_extra', 500], ['project_title', 160], ['project_ref', 160], ['terms', 120], ['payment_note', 1500], ['notes', 1500]]) {
     if (b[k] === undefined) continue;
     const v = clean(b[k], max);
@@ -712,8 +747,10 @@ on('POST', '/team/invoices/:id/send', ADMIN, async ({ request, env, params, user
     ...(inv.order_id ? [env.DB.prepare('INSERT INTO events (order_id, user_id, type, detail, created_at) VALUES (?, ?, ?, ?, ?)').bind(inv.order_id, user.id, 'invoice', `Invoice ${inv.number} sent`, at)] : []),
   ]);
   const link = invoiceLink(request, env, inv), st = await getSettings(env);
-  const emailed = inv.bill_email ? await sendEmail(env, inv.bill_email, `Invoice ${inv.number} from ${st.biz_name}`,
-    `Hi ${inv.bill_name},\n\nPlease find invoice ${inv.number} for ${inv.currency} ${inv.total.toFixed(2)} here:\n${link}\n\n${st.payment_note}\n\nThank you.`) : false;
+  const emailed = inv.bill_email ? await sendMail(env, inv.bill_email, `Invoice ${inv.number} from ${st.biz_name}`,
+    `Hi ${inv.bill_name},\n\nPlease find invoice ${inv.number} for ${inv.currency} ${inv.total.toFixed(2)} here:\n${link}\n\n${st.payment_note}\n\nThank you.`,
+    emailHtml(siteUrl(request, env), { heading: `Invoice ${inv.number}`, intro: `Hi ${escH(inv.bill_name)},<br><br>Here is your invoice from ${escH(st.biz_name)}. You can view it online and save it as a PDF.`,
+      lines: [['Invoice', inv.number], ['Amount', `${inv.currency} ${inv.total.toFixed(2)}`], ['Terms', inv.terms || 'Due on receipt']], button: { label: 'View invoice', url: link }, outro: escH(st.payment_note) })) : false;
   return json({ ok: true, link, emailed, invoice: await loadInvoice(env, inv.id) });
 });
 
@@ -744,14 +781,56 @@ on('POST', '/team/invoices/:id/void', ADMIN, async ({ env, params }) => {
   return json({ ok: true, invoice: await loadInvoice(env, inv.id) });
 });
 
-on('GET', '/team/settings', ADMIN, async ({ env }) => json({ ok: true, settings: await getSettings(env) }));
+async function settingsStatus(env) {
+  env.__notify = null;
+  const st = await one(env, 'SELECT COALESCE(SUM(size), 0) AS bytes, COUNT(*) AS n FROM files');
+  return { email_ready: await emailReady(env), resend_key: !!env.RESEND_API_KEY, webhook: !!(await notifySettings(env)).webhook,
+    storage: { bytes: st.bytes, files: st.n, limit: env.FILES ? null : STORAGE_LIMIT, backend: env.FILES ? 'R2' : 'D1' }, backup_key: !!env.BACKUP_KEY };
+}
+on('GET', '/team/settings', ADMIN, async ({ env }) => json({ ok: true, settings: await getSettings(env), status: await settingsStatus(env) }));
+on('POST', '/team/settings/test-alert', ADMIN, async ({ request, env, user }) => {
+  const n = await notifySettings(env);
+  if (!n.webhook && !(env.RESEND_API_KEY && n.from)) throw new HttpError(409, 'not_configured', 'Add a webhook link or connect email first.');
+  await alertTeam(env, siteUrl(request, env), { title: 'Test alert', text: `${user.name} sent a test from the CubiX dashboard. Alerts are working.`, url: `${siteUrl(request, env)}/team/` });
+  return json({ ok: true });
+});
+on('POST', '/team/settings/test-email', ADMIN, async ({ request, env, user }) => {
+  if (!(await emailReady(env))) throw new HttpError(409, 'not_configured', env.RESEND_API_KEY ? 'Add the sender address (for example CubiX <orders@axys3d.com>) first.' : 'Email is not connected yet. Add the Resend key in Cloudflare first.');
+  const ok = await sendMail(env, user.email, 'CubiX test email', `Hi ${user.name},\n\nEmail from the CubiX dashboard is working.`,
+    emailHtml(siteUrl(request, env), { heading: 'Email is working', intro: `Hi ${escH(user.name)},<br><br>This test came from the CubiX dashboard. Clients and your team will now get emails automatically.`, button: { label: 'Open dashboard', url: `${siteUrl(request, env)}/team/` } }));
+  if (!ok) throw new HttpError(502, 'send_failed', 'Resend did not accept the email. Check the key and that the sender domain is verified in Resend.');
+  return json({ ok: true, to: user.email });
+});
+
+// Data backup as JSON: every table except file contents, sessions and one time links.
+// Admins download it from Settings; the weekly GitHub Action uses the BACKUP_KEY secret.
+on('GET', '/backup', PUBLIC, async ({ request, env }) => {
+  const key = request.headers.get('x-backup-key');
+  if (!(env.BACKUP_KEY && env.BACKUP_KEY.length >= 24 && key && key === env.BACKUP_KEY)) {
+    const u = await getUser(request, env);
+    if (!u) throw new HttpError(401, 'unauthorized', 'Please sign in.');
+    if (u.role !== 'admin') throw new HttpError(403, 'forbidden');
+  }
+  const tables = ['shops', 'users', 'orders', 'files', 'messages', 'events', 'invoices', 'settings'];
+  const cols = { files: 'id, order_id, kind, version, r2_key, name, size, type, uploaded_by, created_at' };
+  const r = await env.DB.batch(tables.map(t => env.DB.prepare(`SELECT ${cols[t] || '*'} FROM ${t}`)));
+  const data = Object.fromEntries(tables.map((t, i) => [t, r[i].results]));
+  const at = now();
+  return new Response(JSON.stringify({ app: 'cubix', version: 1, exported_at: at, counts: Object.fromEntries(tables.map(t => [t, data[t].length])), tables: data }), {
+    headers: { 'content-type': 'application/json', 'content-disposition': `attachment; filename="cubix-backup-${at.slice(0, 10)}.json"`, 'cache-control': 'no-store' } });
+});
 on('PATCH', '/team/settings', ADMIN, async ({ request, env }) => {
   const b = await readBody(request), stmts = [];
   for (const k of Object.keys(SETTING_DEFAULTS)) {
     if (b[k] === undefined) continue;
-    const v = clean(b[k], k.endsWith('note') || k === 'notes' ? 1500 : 200);
+    let v = clean(b[k], k.endsWith('note') || k === 'notes' ? 1500 : k === 'alert_webhook' ? 500 : 200);
+    if (k === 'paypal_me') v = v.replace(/^https?:\/\/(www\.)?paypal\.me\//, '').replace(/\/.*$/, '');
     if (k === 'biz_email' && v && !validEmail(v)) throw new HttpError(422, 'invalid', 'The business email is not valid.');
     if (k === 'biz_name' && !v) throw new HttpError(422, 'invalid', 'Add the business name.');
+    if (k === 'alert_webhook' && v && !/^https:\/\/[^\s]+$/.test(v)) throw new HttpError(422, 'invalid', 'The webhook must be an https link from Slack, Discord or Google Chat.');
+    if (k === 'alert_email' && v && !v.split(/[,\s]+/).filter(Boolean).every(validEmail)) throw new HttpError(422, 'invalid', 'Alert emails must be valid addresses, separated by commas.');
+    if (k === 'mail_from' && v && !/^([^<>]*<)?[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+>?$/.test(v)) throw new HttpError(422, 'invalid', 'Sender must look like CubiX <orders@yourdomain.com>.');
+    if (k === 'paypal_me' && v && !/^[A-Za-z0-9._-]{2,40}$/.test(v.replace(/^https?:\/\/(www\.)?paypal\.me\//, ''))) throw new HttpError(422, 'invalid', 'Enter your PayPal.me name, for example cubix3d.');
     stmts.push(env.DB.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').bind(k, v));
   }
   if (stmts.length) await env.DB.batch(stmts);
@@ -772,8 +851,9 @@ on('GET', '/invoice/:token', PUBLIC, async ({ request, env, params }) => {
   if (!inv) throw new HttpError(404, 'not_found', 'Invoice not found.');
   if (inv.status === 'draft') { const u = await getUser(request, env); if (!isTeam(u)) throw new HttpError(404, 'not_found', 'Invoice not found.'); }
   const st = await getSettings(env);
-  const pick = ['number', 'status', 'bill_name', 'bill_email', 'bill_extra', 'project_title', 'project_ref', 'currency', 'tax_rate', 'subtotal', 'tax', 'total', 'terms', 'payment_note', 'notes', 'issued_at', 'sent_at', 'paid_at', 'paid_via'];
+  const pick = ['number', 'status', 'pay_url', 'bill_name', 'bill_email', 'bill_extra', 'project_title', 'project_ref', 'currency', 'tax_rate', 'subtotal', 'tax', 'total', 'terms', 'payment_note', 'notes', 'issued_at', 'sent_at', 'paid_at', 'paid_via'];
   const out = Object.fromEntries(pick.map(k => [k, inv[k]])); out.items = JSON.parse(inv.items || '[]');
+  if (inv.status === 'sent' && st.paypal_me) out.paypal_url = `https://paypal.me/${encodeURIComponent(st.paypal_me)}/${inv.total.toFixed(2)}${inv.currency}`;
   return json({ ok: true, invoice: out, business: { name: st.biz_name, tagline: st.biz_tagline, email: st.biz_email, website: st.biz_website, address: st.biz_address } },
     200, { 'x-robots-tag': 'noindex' });
 });

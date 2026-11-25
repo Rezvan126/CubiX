@@ -168,6 +168,7 @@
       const files = dz.files();
       if (!files.length) { msg.textContent = 'Add at least one photo or file.'; msg.className = 'form-msg err'; return; }
       files.forEach(f => fd.append('files', f, f.name)); fd.set('channel', 'Portal');
+      try { const src = JSON.parse(localStorage.getItem('cx_src') || 'null'); if (src && src.s) fd.set('source', src.s); } catch {}
       await CX.addThumbs(fd, files);
       CX.busy(btn, true, 'Uploading'); prog.hidden = false;
       try {
@@ -223,7 +224,8 @@
     const af = $('#addFiles', main), mf = $('#moreFiles', main);
     af && af.addEventListener('click', () => mf.click());
     mf && mf.addEventListener('change', async () => {
-      const list = [...mf.files]; if (!list.length) return;
+      let list = [...mf.files]; mf.value = ''; if (!list.length) return;
+      list = await CX.convertHeic(list, () => toast('Converting iPhone photos, one moment'));
       if (list.some(f => f.size > 25 * 1024 * 1024)) return toast('Each file must be under 25 MB. Email bigger files to us.', true);
       const fd = new FormData(); list.forEach(f => fd.append('files', f, f.name)); await CX.addThumbs(fd, list);
       const prog = $('#moreProg', main); prog.hidden = false; af.disabled = true;
