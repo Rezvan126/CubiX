@@ -1,3 +1,5 @@
+@font-face{font-family:"Inter";font-style:normal;font-weight:100 900;font-display:swap;src:url(/assets/fonts/inter.woff2) format("woff2-variations"),url(/assets/fonts/inter.woff2) format("woff2")}
+@font-face{font-family:"Bricolage Grotesque";font-style:normal;font-weight:200 800;font-display:swap;src:url(/assets/fonts/bricolage.woff2) format("woff2-variations"),url(/assets/fonts/bricolage.woff2) format("woff2")}
 /* Scalehaus site
    Layout concept: a drafting table. Clean paper surfaces, graphite type, technical annotations
    (dimension lines, registration marks, mono labels) and one filament orange used only for action. */

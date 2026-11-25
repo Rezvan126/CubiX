@@ -298,17 +298,18 @@
         `Product: ${fd.get('product')}`, `Files needed: ${fd.getAll('formats').join(', ')}`, `Work via: ${fd.get('channel')}`, '', `${fd.get('notes') || ''}`,
         '', `Photos: ${files.map(f => f.name).join(', ') || 'attached'}`].join('\n');
     };
-    form.addEventListener('submit', e => {
+    form.addEventListener('submit', async e => {
       e.preventDefault();
       let ok = true;
       $$('[required]', form).forEach(f => { const bad = !f.value.trim() || (f.type === 'email' && !/^\S+@\S+\.\S+$/.test(f.value.trim())); f.classList.toggle('invalid', bad); if (bad) ok = false; });
       if (!ok) return say('Please add your name and a valid email address.', 'err');
-      if (!files.length) { drop.classList.add('invalid'); return say('Please add at least one photo of the house.', 'err'); }
+      if (!files.length) { drop.classList.add('invalid'); return say('Please add at least one photo or file.', 'err'); }
 
       const fd = new FormData(form); fd.delete('files'); fd.set('formats', fd.getAll('formats').join(', '));
       fd.set('notes', `Product: ${fd.get('product')}\n${fd.get('notes') || ''}`);
       files.forEach(f => fd.append('files', f, f.name));
       btn.disabled = true; btn.firstChild.textContent = 'Sending ';
+      await addThumbs(fd, files);
       const fallback = () => {
         const href = mail(`Free model order from ${new FormData(form).get('name')}`, summary());
         say(`Your email app should open with the order details. Please attach the photos there and press send. If it does not open, email <a href="${href}">${CONFIG.email}</a>.`, 'ok');
@@ -320,6 +321,7 @@
       xhr.onload = () => {
         let res = {}; try { res = JSON.parse(xhr.responseText); } catch {}
         if (xhr.status < 300 && res.ok) { form.reset(); files = []; render(); say(`Received. Your order number is <b>${res.id}</b>. We confirm by email within minutes and send a preview within 24 hours.`, 'ok'); }
+        else if (xhr.status >= 400 && xhr.status < 500 && res.message) say(res.message, 'err');
         else fallback();
         done();
       };
@@ -327,6 +329,19 @@
       xhr.send(fd);
       function done() { btn.disabled = false; btn.firstChild.textContent = 'Send my free order '; }
     });
+    // small webp previews uploaded next to each photo, so the team dashboard loads fast
+    async function addThumbs(fd, list) {
+      for (const f of list) {
+        if (!/^image\/(jpeg|png|webp|gif|bmp)/.test(f.type)) continue;
+        try {
+          const bmp = await createImageBitmap(f), k = Math.min(1, 480 / Math.max(bmp.width, bmp.height));
+          const c = document.createElement('canvas'); c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+          c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+          const blob = await new Promise(r => c.toBlob(r, 'image/webp', 0.8));
+          if (blob && blob.size < 300 * 1024) fd.append('thumbs', blob, f.name);
+        } catch {}
+      }
+    }
   }
 
   /* reveal on scroll */

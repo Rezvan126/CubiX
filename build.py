@@ -43,6 +43,14 @@ def jsonld(name, meta, body):
     return '<script type="application/ld+json">' + json.dumps({"@context": "https://schema.org", "@graph": graph}, ensure_ascii=False).replace('</', '<\\/') + '</script>'
 sitemap = []
 
+import hashlib
+def bust(html):
+    def ver(m):
+        path = os.path.join(OUT, m.group(2).lstrip('/'))
+        if not os.path.exists(path): return m.group(0)
+        return m.group(1) + m.group(2) + '?v=' + hashlib.sha1(open(path, 'rb').read()).hexdigest()[:10] + m.group(3)
+    return re.sub(r'((?:href|src)=")(/?assets/(?:css|js)/[\w.-]+\.(?:css|js))(")', ver, html)
+
 for name in sorted(os.listdir(os.path.join(SRC, 'pages'))):
     raw = open(os.path.join(SRC, 'pages', name), encoding='utf-8').read()
     m = re.match(r'\s*<!--meta (.*?)-->\n?', raw, re.S)
@@ -58,7 +66,7 @@ for name in sorted(os.listdir(os.path.join(SRC, 'pages'))):
             + header + body + footer.replace('{{scripts}}', VIEWER_JS if viewer else ''))
     # mark the current page in both menus
     html = html.replace(f'data-nav="{meta["nav"]}"', f'data-nav="{meta["nav"]}" aria-current="page"')
-    open(os.path.join(OUT, name), 'w', encoding='utf-8').write(html)
+    open(os.path.join(OUT, name), 'w', encoding='utf-8').write(bust(html))
     print('built', name)
 
 open(os.path.join(OUT, 'sitemap.xml'), 'w', encoding='utf-8').write(
@@ -83,9 +91,9 @@ extra = '''
   <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></symbol>
 </svg>'''
 os.makedirs(os.path.join(SRC, 'panel'), exist_ok=True)
-for app in ('team', 'app'):
+for app in ('team', 'app', 'invoice'):
     p = os.path.join(SRC, 'panel', app + '.html')
     if not os.path.exists(p): continue
     os.makedirs(os.path.join(OUT, app), exist_ok=True)
-    open(os.path.join(OUT, app, 'index.html'), 'w', encoding='utf-8').write(open(p, encoding='utf-8').read().replace('{{sprite}}', sprite + extra))
+    open(os.path.join(OUT, app, 'index.html'), 'w', encoding='utf-8').write(bust(open(p, encoding='utf-8').read().replace('{{sprite}}', sprite + extra)))
     print('built', app + '/index.html')

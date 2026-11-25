@@ -1,3 +1,5 @@
+@font-face{font-family:"Inter";font-style:normal;font-weight:100 900;font-display:swap;src:url(/assets/fonts/inter.woff2) format("woff2-variations"),url(/assets/fonts/inter.woff2) format("woff2")}
+@font-face{font-family:"Bricolage Grotesque";font-style:normal;font-weight:200 800;font-display:swap;src:url(/assets/fonts/bricolage.woff2) format("woff2-variations"),url(/assets/fonts/bricolage.woff2) format("woff2")}
 /* CubiX portals: team dashboard (/team) and client portal (/app). Same tokens as the website. */
 :root{
   --paper:#fbfbf9; --surface:#f2f3ef; --surface-2:#e8eae4; --card:#fff;
@@ -424,3 +426,26 @@ a.kpi:hover{border-color:var(--ink);transform:translateY(-1px)}
 .brand img{height:36px;width:auto;display:block}
 .mobilebar .brand img{height:30px}
 .side .brand img{height:34px}
+
+/* invoices */
+.modal-box.wide{width:min(820px,100%)}
+.inv-draft{background:#eef0f3;color:#3d4753}
+.inv-sent{background:var(--info-soft);color:var(--info)}
+.inv-paid{background:var(--ok-soft);color:var(--ok)}
+.inv-void{background:#f1f1f1;color:#6b6b6b}
+.inv-grid4{display:grid;grid-template-columns:1fr 1.4fr .7fr .7fr;gap:12px}
+.inv-items{display:grid;gap:10px}
+.inv-item{display:grid;gap:8px;padding:12px;border:1px solid var(--line);border-radius:12px;background:#fcfcfa}
+.inv-item-top{display:grid;grid-template-columns:1fr 70px 100px 90px auto;gap:8px;align-items:center}
+.inv-item textarea{min-height:44px!important}
+.inv-amt{text-align:right;font-weight:600;color:var(--ink);font-size:14px}
+.inv-total{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;padding:12px 14px;border-radius:12px;background:var(--surface)}
+.inv-total > span:last-child{font-size:15px;color:var(--ink)}
+.inv-total b{color:var(--ink)}
+.tabbar{grid-template-columns:none;grid-auto-flow:column;grid-auto-columns:1fr}
+@media (max-width:640px){.inv-grid4{grid-template-columns:1fr 1fr}.inv-item-top{grid-template-columns:1fr 1fr}.inv-item-top input[data-k=title]{grid-column:1 / -1}.inv-amt{text-align:left}}
+.inv-link{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:11px;text-decoration:none;font-size:13.5px;font-weight:600;color:var(--ink)}
+.inv-link:hover{border-color:var(--ink)}
+.inv-link span{display:inline-flex;align-items:center;gap:8px}
+.inv-item textarea[data-k=bullets]{min-height:92px!important}
+.side-user .who{min-width:60px}

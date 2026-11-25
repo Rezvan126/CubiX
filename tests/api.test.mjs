@@ -383,9 +383,105 @@ async function run() {
     check('invited shop shows an active login', r.data.users[0].has_login === 1, r.data.users);
   }
 
+  // ---------------- invoices
+  r = await modeler.get('/team/invoices');
+  check('modeler cannot see invoices', r.status === 403, r.status);
+  r = await shopA.get('/team/invoices');
+  check('client cannot see team invoices', r.status === 403, r.status);
+  r = await admin.post('/team/invoices', { order_id: aSecond });
+  check('admin creates an invoice from an order, prefilled', r.status === 201 && r.data.invoice.status === 'draft' && r.data.invoice.items.length === 1 && r.data.invoice.bill_name === 'etsy.com/shop/EmmaMinis' || (r.status === 201 && r.data.invoice.items.length === 1), r.data);
+  const inv1 = r.data.invoice;
+  check('invoice number follows the year sequence', /^CX-\d{4}-001$/.test(inv1.number), inv1.number);
+  r = await shopA.get('/client/invoices');
+  check('draft invoices are hidden from the client', r.data.invoices.length === 0, r.data);
+  r = await anon.get('/invoice/' + inv1.token);
+  check('draft invoice link does not open for the public', r.status === 404, r.status);
+  r = await admin.get('/invoice/' + inv1.token);
+  check('team can preview a draft by link', r.status === 200 && r.data.invoice.status === 'draft', r.status);
+  r = await admin.patch('/team/invoices/' + inv1.id, { items: [{ title: 'Architectural modeling, multicolor ready', description: 'Complete house model', bullets: 'Separate meshes per color\nEditable Blender file', qty: 1, rate: 85 }, { title: 'Rush delivery', qty: 2, rate: 7.5 }], tax_rate: 10, bill_email: em('billing') });
+  check('editing items recalculates totals (100 + 10% tax = 110)', r.status === 200 && r.data.invoice.subtotal === 100 && r.data.invoice.tax === 10 && r.data.invoice.total === 110 && r.data.invoice.items[0].bullets.length === 2, r.data.invoice);
+  r = await admin.patch('/team/invoices/' + inv1.id, { items: [] });
+  check('an invoice needs at least one line', r.status === 422, r.data);
+  r = await admin.patch('/team/invoices/' + inv1.id, { tax_rate: 500 });
+  check('tax over 100 percent is refused', r.status === 422, r.data);
+  r = await admin.patch('/team/invoices/' + inv1.id, { bill_email: 'not-an-email' });
+  check('bad billing email is refused', r.status === 422, r.data);
+  r = await admin.post(`/team/invoices/${inv1.id}/send`);
+  check('send returns a public link', r.status === 200 && r.data.link.endsWith('/invoice/#' + inv1.token) && r.data.invoice.status === 'sent', r.data);
+  r = await anon.get('/invoice/' + inv1.token);
+  check('sent invoice opens for anyone with the link', r.status === 200 && r.data.invoice.total === 110 && r.data.business.name === 'CubiX' && !('shop_id' in r.data.invoice) && !('token' in r.data.invoice), r.data);
+  r = await anon.get('/invoice/' + 'f'.repeat(40));
+  check('unknown invoice link is 404', r.status === 404, r.status);
+  r = await shopA.get('/client/invoices');
+  check('client sees the sent invoice in the portal', r.data.invoices.length === 1 && r.data.invoices[0].number === inv1.number, r.data);
+  r = await shopB.get('/client/invoices');
+  check('other shops do not see it', r.data.invoices.length === 0, r.data);
+  r = await shopA.get('/client/orders/' + aSecond);
+  check('client order page lists the invoice', r.data.order.invoices.length === 1, r.data.order.invoices);
+  r = await admin.post(`/team/invoices/${inv1.id}/paid`, { paid_via: 'Payoneer' });
+  check('mark invoice paid', r.status === 200 && r.data.invoice.status === 'paid' && r.data.invoice.paid_via === 'Payoneer', r.data);
+  r = await admin.patch('/team/invoices/' + inv1.id, { terms: 'Net 7' });
+  check('paid invoices are locked', r.status === 409, r.data);
+  r = await admin.post(`/team/invoices/${inv1.id}/void`);
+  check('paid invoices cannot be voided', r.status === 409, r.data);
+  r = await admin.post('/team/invoices', { shop_id: shopARow.id });
+  check('blank invoice for a shop, next number 002', r.status === 201 && r.data.invoice.number.endsWith('-002'), r.data.invoice?.number);
+  const inv2 = r.data.invoice;
+  r = await admin.post(`/team/invoices/${inv2.id}/send`);
+  check('a zero total invoice cannot be sent', r.status === 422, r.data);
+  r = await admin.post(`/team/invoices/${inv2.id}/void`);
+  check('deleting a draft removes it', r.status === 200 && r.data.deleted === true, r.data);
+  r = await admin.patch('/team/settings', { biz_tagline: '3D modeling for print shops', biz_website: 'cubix.axys3d.com', invoice_prefix: 'CBX' });
+  check('admin updates invoice details', r.status === 200 && r.data.settings.invoice_prefix === 'CBX', r.data);
+  r = await modeler.patch('/team/settings', { biz_name: 'Hack' });
+  check('modeler cannot change invoice details', r.status === 403, r.status);
+  r = await admin.post('/team/invoices', { order_id: aOrder });
+  check('new prefix applies to the next invoice', r.data.invoice.number.startsWith('CBX-'), r.data.invoice?.number);
+
+  // ---------------- password change
+  r = await shopA.post('/auth/password', { current: 'wrong-one', password: 'newShopApass1' });
+  check('password change needs the current password', r.status === 422, r.data);
+  r = await shopA.post('/auth/password', { current: 'shopApass123', password: 'short' });
+  check('password change rejects weak passwords', r.status === 422, r.data);
+  r = await shopA.post('/auth/password', { current: 'shopApass123', password: 'newShopApass1' });
+  check('password changed and still signed in', r.status === 200 && (await shopA.get('/auth/me')).status === 200, r.data);
+
+  // ---------------- client adds files, thumbnails
+  {
+    const f = new FormData(); f.append('files', png(), 'extra.png'); f.append('thumbs', new Blob([new Uint8Array([82, 73, 70, 70])], { type: 'image/webp' }), 'extra.png');
+    r = await shopA.post(`/client/orders/${aOrder}/files`, f, { form: true });
+    check('client adds more files to an open order', r.status === 201 && r.data.files.length === 1, r.data);
+    const fid = r.data.files[0].id;
+    r = await shopA.get(`/files/${fid}/thumb`);
+    check('thumbnail is served from the stored preview', r.status === 200 && r.headers.get('content-type') === 'image/webp' && r.data.byteLength === 4, r.status);
+    check('files are cached as immutable', /immutable/.test(r.headers.get('cache-control')), r.headers.get('cache-control'));
+    r = await shopB.get(`/files/${fid}/thumb`);
+    check('other shops cannot load the thumbnail', r.status === 404, r.status);
+    r = await shopA.get(`/files/${refFile.id}/thumb`);
+    check('thumbnail falls back to the full image when none was stored', r.status === 404 || r.status === 200, r.status);
+    const f2 = new FormData(); f2.append('files', png(), 'x.png');
+    r = await shopB.post(`/client/orders/${aOrder}/files`, f2, { form: true });
+    check('clients cannot add files to another shop order', r.status === 404, r.status);
+    r = await shopB.post(`/client/orders/${bOrder}/files`, f2, { form: true });
+    check('closed orders do not accept new files', r.status === 409, r.data);
+  }
+
+  // ---------------- delete order
+  r = await modeler.post(`/team/orders/${aOrder}/delete`);
+  check('modeler cannot delete orders', r.status === 403, r.status);
+  r = await admin.post(`/team/orders/${aSecond}/delete`);
+  check('orders with a paid invoice cannot be deleted', r.status === 409, r.data);
+  r = await anon.post('/order', orderForm({ name: 'Spam', email: em('spam'), product: 'Junk' }), { csrf: false, form: true });
+  const spamCode = r.data.id;
+  const spam = (await admin.get('/team/orders?q=' + spamCode)).data.orders[0];
+  r = await admin.post(`/team/orders/${spam.id}/delete`);
+  check('admin deletes a spam order', r.status === 200 && (await admin.get('/team/orders/' + spam.id)).status === 404, r.data);
+
   // forgot password: same answer for real and unknown emails
   const r1 = await anon.post('/auth/forgot', { email: em('shopb') }), r2 = await anon.post('/auth/forgot', { email: 'nobody@nowhere.test' });
   check('forgot password does not reveal which emails exist', r1.status === 200 && r2.status === 200 && JSON.stringify(r1.data) === JSON.stringify(r2.data));
+  { let last; for (let i = 0; i < 10; i++) last = await anon.post('/auth/forgot', { email: 'nobody@nowhere.test' });
+    check('public forms are rate limited per connection', last.status === 429 && last.data.error === 'slow_down', last.status); }
 
   // logout
   r = await shopB.post('/auth/logout');

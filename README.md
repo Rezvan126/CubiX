@@ -64,6 +64,27 @@ Then sign in at `/team/`. Add your modelers under Team: each one gets a link to 
 - Shops that order through the website form get an account automatically. Open them under Shops and click "Login link" to give them portal access.
 - Shops can also sign up themselves at `/app/`.
 
+### Invoices
+- **Create:** open an order and click **Create invoice**; it's prefilled from the order. Or go to **Invoices**, then **New invoice**, for any shop.
+- **Edit:** line items (title, description, bullet points, quantity, rate), tax, terms, and the payment and confidentiality notes.
+- **Send:** gives a private link (`/invoice/#...`) that opens in any browser without a login. The client can save it as a one page A4 PDF with **Download PDF**. Sent invoices also appear in the client portal, under the order and under **Invoices**.
+- **Mark paid:** marks the linked order paid too, once the client has approved it.
+- **Void:** a sent invoice can be voided. A draft can be deleted.
+- **Invoice details:** under **Invoices**, then **Invoice details**, set the business name, tagline, email, address, number prefix and the default notes.
+
+### Speed
+- Reads come from the nearest database copy (D1 read replication, with a bookmark per browser so people always see their own changes).
+- Each page needs one or two database trips.
+- Uploaded images get a small preview made in the browser.
+- Files, scripts, styles and fonts are cached by the browser; the build adds `?v=` versions to CSS and JS so updates show at once.
+
+### Database changes
+New tables and columns are in `migrations/`. Apply one to the live database before deploying code that needs it:
+
+```bash
+npx wrangler d1 execute cubix-db --remote --file=migrations/0002_invoices_thumbs_settings.sql
+```
+
 ## Preview and test locally
 ```bash
 npm install
@@ -74,7 +95,7 @@ This starts a fresh local database and the server on http://localhost:8788. Firs
 ```bash
 npm run test:api
 ```
-That runs 129 checks on accounts, permissions, the order lifecycle, files, payments and capacity. For the full browser test (104 checks, desktop and phone, screenshots in `tests/shots/`), first run `./tests/fresh.sh` again, then:
+That runs 179 checks on accounts, permissions, the order lifecycle, files, payments and capacity. For the full browser test (125 checks, desktop and phone, screenshots in `tests/shots/`), first run `./tests/fresh.sh` again, then:
 
 ```bash
 npm run test:e2e

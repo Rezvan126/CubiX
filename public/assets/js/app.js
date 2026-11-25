@@ -68,12 +68,13 @@
       <div class="right"><a class="btn btn-primary" href="#/new">${icon('plus')}<span>New order</span></a>
         <div class="menu"><button class="icon-btn" id="mBtn" aria-haspopup="true" aria-expanded="false" aria-label="Account">${CX.avatar(S.me.name)}</button>
           <div class="menu-pop" id="mPop" hidden><div class="hd"><b>${esc(S.me.name)}</b><span class="muted">${esc(S.me.email)}</span>${S.shop ? `<div class="muted" style="margin-top:4px">${esc(S.shop.name)} · ${CX.PLANS[S.shop.plan] || ''}</div>` : ''}</div>
-            <a href="#/">${icon('layers')} My orders</a><a href="mailto:rizwan@coraxys.com">${icon('mail')} Email the team</a><a href="../pricing.html#packages">${icon('card')} Monthly packages</a>
+            <a href="#/">${icon('layers')} My orders</a><a href="#/invoices">${icon('file')} Invoices</a><button id="pwBtn">${icon('lock')} Change password</button><a href="mailto:rizwan@coraxys.com">${icon('mail')} Email the team</a><a href="../pricing.html#packages">${icon('card')} Monthly packages</a>
             <button id="logout">${icon('logout')} Sign out</button></div></div></div></div></header>
       <main class="cmain" id="main" tabindex="-1"></main>`;
     const btn = $('#mBtn'), pop = $('#mPop');
     btn.addEventListener('click', e => { e.stopPropagation(); pop.hidden = !pop.hidden; btn.setAttribute('aria-expanded', String(!pop.hidden)); });
     document.addEventListener('click', e => { if (!pop.hidden && !pop.contains(e.target)) { pop.hidden = true; btn.setAttribute('aria-expanded', 'false'); } });
+    $('#pwBtn').addEventListener('click', () => { pop.hidden = true; CX.changePassword(); });
     $('#logout').addEventListener('click', async () => { try { await post('/auth/logout'); } catch {} S.me = null; renderLogin(); });
   }
 
@@ -86,6 +87,7 @@
     try {
       if (v === '') await viewList(main);
       else if (v === 'new') viewNew(main);
+      else if (v === 'invoices') await viewInvoices(main);
       else if (v === 'orders' && r.parts[1]) await viewOrder(main, r.parts[1]);
       else main.innerHTML = `<div class="empty"><h3>Page not found</h3><a class="btn btn-line" href="#/">Back to my orders</a></div>`;
     } catch (e) {
@@ -114,12 +116,22 @@
       ${S.shop && !S.shop.free_used ? `<div class="banner">${icon('gift')}<div><b>Your first model is free.</b><div class="small">Any complexity. Send the order you have been turning down.</div></div><a class="btn btn-primary" href="#/new">Start my free model</a></div>` : ''}
       ${action.length ? `<div class="banner" style="background:var(--accent-soft);color:var(--ink-2);border:1.5px solid var(--accent)">${icon('eye')}<div><b style="color:var(--ink)">${action.length === 1 ? 'A preview is waiting for you' : `${action.length} previews are waiting for you`}</b><div class="small">Approve it, or tell us what to change. Your customer is waiting too.</div></div><a class="btn btn-dark" href="#/orders/${action[0].id}">Review now</a></div>` : ''}
       ${orders.length ? `<div class="olist">${orders.map(o => `<a class="oitem" href="#/orders/${o.id}">
-        ${o.thumb ? `<img class="thumb" src="${CX.fileUrl(o.thumb, 1)}" alt="" loading="lazy">` : `<span class="thumb ph">${icon('cube')}</span>`}
+        ${o.thumb ? `<img class="thumb" src="${CX.thumbUrl(o.thumb)}" alt="" loading="lazy">` : `<span class="thumb ph">${icon('cube')}</span>`}
         <div style="min-width:0"><div class="ttl ellipsis">${esc(o.title)}</div><div class="sub">${esc(o.code)} · ordered ${date(o.created_at)}${o.is_free ? ' · <span style="color:var(--ok);font-weight:600">Free model</span>' : ''}</div></div>
         <div class="act">${cpill(o.status)}${needsYou(o) ? `<span class="callout">${needsYou(o)} ${icon('arrow')}</span>` : (['new', 'confirmed', 'modeling', 'revisions'].includes(o.status) ? `<span class="small muted">Ready by ${dateTime(o.due_at)}</span>` : '')}</div></a>`).join('')}</div>`
       : `<div class="card empty" style="padding:64px 20px">${icon('upload')}<h3>No orders yet</h3><p>Upload a few photos of what your customer wants. We send back a preview within 48 hours.</p><a class="btn btn-primary" href="#/new">${icon('plus')} Place my first order</a></div>`}`;
     if (quiet && CX.route().parts.length) return;
     main.innerHTML = html;
+  }
+
+  // ---------------------------------------------------------------- invoices
+  async function viewInvoices(main) {
+    const { invoices } = await get('/client/invoices');
+    main.innerHTML = `<a class="back" href="#/">${icon('arrow')} My orders</a><div class="top"><div><h1>Invoices</h1><p class="muted">Open any invoice to view it or save it as a PDF.</p></div></div>
+      ${invoices.length ? `<div class="olist">${invoices.map(i => `<a class="oitem" style="grid-template-columns:48px 1fr auto" href="/invoice/#${esc(i.token)}" target="_blank" rel="noopener">
+        <span class="thumb ph" style="width:48px;height:48px">${icon('file')}</span><div style="min-width:0"><div class="ttl ellipsis">Invoice ${esc(i.number)}</div><div class="sub">${esc(i.project_title || '')}${i.order_code ? ` · ${esc(i.order_code)}` : ''} · ${date(i.issued_at)}</div></div>
+        <div class="act"><b class="num" style="color:var(--ink)">${esc(i.currency)} ${CX.amount(i.total)}</b>${i.status === 'paid' ? '<span class="pill st-delivered">Paid</span>' : '<span class="pill st-new">Open</span>'}</div></a>`).join('')}</div>`
+      : `<div class="card empty" style="padding:56px 20px">${icon('file')}<h3>No invoices yet</h3><p>Invoices appear here once we send them. You only pay after you approve a model.</p></div>`}`;
   }
 
   // ---------------------------------------------------------------- new order
@@ -156,6 +168,7 @@
       const files = dz.files();
       if (!files.length) { msg.textContent = 'Add at least one photo or file.'; msg.className = 'form-msg err'; return; }
       files.forEach(f => fd.append('files', f, f.name)); fd.set('channel', 'Portal');
+      await CX.addThumbs(fd, files);
       CX.busy(btn, true, 'Uploading'); prog.hidden = false;
       try {
         const r = await CX.upload('/client/orders', fd, p => { prog.firstElementChild.style.width = (p * 100) + '%'; });
@@ -174,7 +187,7 @@
     const step = stepOf(o.status);
     const latest = kind => { const fs = o.files.filter(f => f.kind === kind); const v = Math.max(0, ...fs.map(f => f.version)); return { v, list: fs.filter(f => f.version === v), all: fs }; };
     const prev = latest('preview'), fin = latest('final'), refs = o.files.filter(f => f.kind === 'reference');
-    const tile = f => `<a class="file" href="${CX.fileUrl(f.id)}" title="Download ${esc(f.name)}"><span class="fprev">${CX.isImg(f) ? `<img src="${CX.fileUrl(f.id, 1)}" alt="" loading="lazy">` : esc(CX.ext(f.name))}</span><span class="fname">${esc(f.name)}</span></a>`;
+    const tile = f => `<a class="file" href="${CX.fileUrl(f.id)}" title="Download ${esc(f.name)}"><span class="fprev">${CX.isImg(f) ? `<img src="${CX.thumbUrl(f.id)}" alt="" loading="lazy">` : esc(CX.ext(f.name))}</span><span class="fname">${esc(f.name)}</span></a>`;
     let action = '';
     if (o.status === 'preview') action = `<div class="actionbox"><h3>Your preview is ready</h3><p class="small">Check the renders below. Approve to get your print ready files, or tell us what to change.</p>
         <div class="row wrap"><button class="btn btn-primary" id="approve">${icon('check')} Approve preview</button><button class="btn btn-line" id="changes">${icon('refresh')} Ask for changes</button></div></div>`;
@@ -192,7 +205,7 @@
       <div class="cgrid"><div style="display:grid;gap:18px;min-width:0">
         ${action}
         ${prev.list.length ? `<section class="card"><div class="card-head"><h3>Preview${prev.v > 1 ? `, version ${prev.v}` : ''}</h3><span class="small muted">Click to open full size</span></div>
-          <div class="gallery">${prev.list.map(f => CX.isImg(f) ? `<a href="${CX.fileUrl(f.id, 1)}" target="_blank" rel="noopener" aria-label="Open ${esc(f.name)}"><img src="${CX.fileUrl(f.id, 1)}" alt="Preview ${esc(f.name)}" loading="lazy"></a>` : '').join('')}</div>
+          <div class="gallery">${prev.list.map(f => CX.isImg(f) ? `<a href="${CX.fileUrl(f.id, 1)}" target="_blank" rel="noopener" aria-label="Open ${esc(f.name)}"><img src="${CX.thumbUrl(f.id)}" alt="Preview ${esc(f.name)}" loading="lazy"></a>` : '').join('')}</div>
           ${prev.list.some(f => !CX.isImg(f)) ? `<div style="padding:0 20px 16px" class="files">${prev.list.filter(f => !CX.isImg(f)).map(tile).join('')}</div>` : ''}
           ${prev.v > 1 ? `<details style="padding:0 20px 16px"><summary class="small muted" style="cursor:pointer">Earlier versions</summary><div class="files" style="margin-top:10px">${prev.all.filter(f => f.version !== prev.v).map(tile).join('')}</div></details>` : ''}</section>` : ''}
         <section class="card"><div class="card-head"><h3>Conversation</h3><span class="small muted">We usually reply within a few hours</span></div>
@@ -202,10 +215,21 @@
       <aside style="display:grid;gap:18px">
         <section class="card"><div class="card-head"><h3>Order details</h3></div><dl class="specs" style="grid-template-columns:1fr 1fr">${[['Type', o.product], ['Size', o.size], ['Printer', o.printer], ['Formats', o.formats], ['Ordered', dateTime(o.created_at)], ['Revisions', o.revisions ? String(o.revisions) : '']].filter(x => x[1]).map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join('')}</dl>
           ${o.notes ? `<div class="notes small">${esc(o.notes)}</div>` : ''}</section>
-        <section class="card card-pad" style="display:grid;gap:8px"><h3>Payment</h3>${o.is_free ? '<p class="small"><b style="color:var(--ok)">Free.</b> Your first model is on us.</p>' : o.paid ? `<p class="small"><b style="color:var(--ok)">Paid</b>${o.paid_via ? ' via ' + esc(o.paid_via) : ''}. Thank you.</p>` : o.price ? `<p class="small">Price: <b>${money(o.price)}</b>. Pay after approval through Upwork, Fiverr, Payoneer or direct. We send the details.</p>` : '<p class="small muted">We confirm the price before we start. You pay only after you approve the model.</p>'}</section>
-        <section class="card"><div class="card-head"><h3>Your files</h3></div><div class="fgroup"><div class="files">${refs.map(tile).join('') || '<p class="small muted">None</p>'}</div></div></section>
+        <section class="card card-pad" style="display:grid;gap:8px"><h3>Payment</h3>${(o.invoices || []).map(i => `<a class="inv-link" href="/invoice/#${esc(i.token)}" target="_blank" rel="noopener"><span>${icon('file')} Invoice ${esc(i.number)}</span><span class="num">${esc(i.currency)} ${CX.amount(i.total)} ${i.status === 'paid' ? '<span class="pill st-delivered plain">Paid</span>' : '<span class="pill st-new plain">Open</span>'}</span></a>`).join('')}${o.is_free ? '<p class="small"><b style="color:var(--ok)">Free.</b> Your first model is on us.</p>' : o.paid ? `<p class="small"><b style="color:var(--ok)">Paid</b>${o.paid_via ? ' via ' + esc(o.paid_via) : ''}. Thank you.</p>` : o.price ? `<p class="small">Price: <b>${money(o.price)}</b>. Pay after approval through Upwork, Fiverr, Payoneer or direct. We send the details.</p>` : '<p class="small muted">We confirm the price before we start. You pay only after you approve the model.</p>'}</section>
+        <section class="card"><div class="card-head"><h3>Your files</h3>${['paid', 'cancelled'].includes(o.status) ? '' : `<button class="btn btn-line btn-sm" id="addFiles">${icon('plus')} Add files</button>`}</div><div class="fgroup"><div class="files">${refs.map(tile).join('') || '<p class="small muted">None</p>'}</div>
+          <input type="file" id="moreFiles" multiple hidden><div class="progress" id="moreProg" hidden><i></i></div></div></section>
       </aside></div>`;
     const th = $('#thread', main); th.scrollTop = th.scrollHeight;
+    const af = $('#addFiles', main), mf = $('#moreFiles', main);
+    af && af.addEventListener('click', () => mf.click());
+    mf && mf.addEventListener('change', async () => {
+      const list = [...mf.files]; if (!list.length) return;
+      if (list.some(f => f.size > 25 * 1024 * 1024)) return toast('Each file must be under 25 MB. Email bigger files to us.', true);
+      const fd = new FormData(); list.forEach(f => fd.append('files', f, f.name)); await CX.addThumbs(fd, list);
+      const prog = $('#moreProg', main); prog.hidden = false; af.disabled = true;
+      try { await CX.upload(`/client/orders/${o.id}/files`, fd, p => { prog.firstElementChild.style.width = (p * 100) + '%'; }); toast('Files added. The team can see them now.'); viewOrder(main, o.id); }
+      catch (e) { fail(e); prog.hidden = true; af.disabled = false; }
+    });
     const ap = $('#approve', main);
     ap && ap.addEventListener('click', async () => {
       if (!(await CX.confirm('Approve this preview?', 'We will prepare your print ready files right away.', 'Approve'))) return;

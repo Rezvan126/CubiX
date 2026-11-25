@@ -12,13 +12,19 @@
   class ApiError extends Error { constructor(status, data) { super((data && data.message) || 'Something went wrong.'); this.status = status; this.data = data; } }
   CX.ApiError = ApiError;
   CX.onUnauthorized = () => {};
+  // Database bookmark: lets reads come from the nearest copy while always including this browser's own latest changes.
+  const BM = 'cx_bm';
+  const getBm = () => { try { return localStorage.getItem(BM) || ''; } catch { return ''; } };
+  const setBm = v => { try { if (v) localStorage.setItem(BM, v); } catch {} };
   CX.api = async function (method, path, body) {
     const opt = { method, headers: { 'x-cubix': '1' }, credentials: 'same-origin' };
+    const bm = getBm(); if (bm) opt.headers['x-d1-bookmark'] = bm;
     if (body instanceof FormData) opt.body = body;
     else if (body !== undefined) { opt.headers['content-type'] = 'application/json'; opt.body = JSON.stringify(body); }
     let r;
     try { r = await fetch('/api' + path, opt); }
     catch { throw new ApiError(0, { message: 'You seem to be offline. Check your connection and try again.' }); }
+    setBm(r.headers.get('x-d1-bookmark'));
     const data = (r.headers.get('content-type') || '').includes('json') ? await r.json() : null;
     if (r.status === 401 && !path.startsWith('/auth/')) { CX.onUnauthorized(); }
     if (!r.ok) throw new ApiError(r.status, data);
@@ -31,8 +37,9 @@
   CX.upload = (path, form, onProgress) => new Promise((resolve, reject) => {
     const x = new XMLHttpRequest();
     x.open('POST', '/api' + path); x.setRequestHeader('x-cubix', '1');
+    const bm = getBm(); if (bm) x.setRequestHeader('x-d1-bookmark', bm);
     x.upload.onprogress = e => e.lengthComputable && onProgress && onProgress(e.loaded / e.total);
-    x.onload = () => { let d = null; try { d = JSON.parse(x.responseText); } catch {} x.status < 300 ? resolve(d) : reject(new ApiError(x.status, d)); };
+    x.onload = () => { setBm(x.getResponseHeader('x-d1-bookmark')); let d = null; try { d = JSON.parse(x.responseText); } catch {} x.status < 300 ? resolve(d) : reject(new ApiError(x.status, d)); };
     x.onerror = () => reject(new ApiError(0, { message: 'Upload failed. Check your connection and try again.' }));
     x.send(form);
   });
@@ -51,6 +58,7 @@
   CX.initials = n => String(n || '?').split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase();
   CX.avatar = (n, cls = '') => n ? `<span class="avatar ${cls}" title="${CX.esc(n)}">${CX.esc(CX.initials(n))}</span>` : `<span class="avatar none ${cls}" title="Unassigned">${CX.icon('plus')}</span>`;
   CX.money = v => v === null || v === undefined || v === '' ? '' : '$' + Number(v).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+  CX.amount = n => Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   CX.size = b => b < 1024 ? b + ' B' : b < 1048576 ? (b / 1024).toFixed(0) + ' KB' : (b / 1048576).toFixed(1) + ' MB';
   CX.date = iso => iso ? new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
   CX.dateTime = iso => iso ? new Date(iso).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
@@ -71,6 +79,24 @@
   };
   CX.isLate = o => o.due_at && !['delivered', 'paid', 'cancelled', 'approved'].includes(o.status) && new Date(o.due_at) < Date.now();
   CX.fileUrl = (id, inline) => `/api/files/${id}${inline ? '?inline=1' : ''}`;
+  CX.thumbUrl = id => `/api/files/${id}/thumb`;
+  // Small webp previews made in the browser, uploaded next to each image so lists load fast.
+  CX.makeThumbs = async (files, max = 480) => {
+    const out = [];
+    for (const f of files) {
+      if (!/^image\/(jpeg|png|webp|gif|bmp)/.test(f.type) || f.size > 30 * 1024 * 1024) continue;
+      try {
+        const bmp = await createImageBitmap(f);
+        const k = Math.min(1, max / Math.max(bmp.width, bmp.height));
+        const c = document.createElement('canvas'); c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+        c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height); bmp.close && bmp.close();
+        const blob = await new Promise(r => c.toBlob(r, 'image/webp', 0.8));
+        if (blob && blob.size < 300 * 1024) out.push(new File([blob], f.name, { type: 'image/webp' }));
+      } catch {}
+    }
+    return out;
+  };
+  CX.addThumbs = async (fd, files) => { for (const t of await CX.makeThumbs(files)) fd.append('thumbs', t, t.name); };
   CX.ext = n => (String(n).split('.').pop() || '').slice(0, 4).toUpperCase();
   CX.isImg = f => /^image\//.test(f.type || '');
 
@@ -164,6 +190,16 @@
     try { await fn(CX.formData(form), msg); }
     catch (err) { if (msg) { msg.textContent = err.message; msg.className = 'form-msg err'; } else CX.fail(err); }
     finally { if (document.body.contains(btn)) CX.busy(btn, false); }
+  });
+
+  CX.changePassword = () => CX.modal(`<h2>Change password</h2><p class="muted small">You stay signed in here. Other devices are signed out.</p>
+    <form id="cpf" style="display:grid;gap:14px" novalidate>${CX.passwordField('current', 'Current password', 'current-password')}${CX.passwordField('password', 'New password', 'new-password')}${CX.passwordField('confirm', 'Repeat new password', 'new-password')}
+    <p class="form-msg" role="alert"></p><div class="modal-actions"><button type="button" class="btn btn-line" data-close>Cancel</button><button class="btn btn-primary" type="submit">Save password</button></div></form>`, (box, close) => {
+    CX.wirePeek(box);
+    CX.submit(CX.$('#cpf', box), async d => {
+      if (d.password !== d.confirm) throw new Error('The two new passwords do not match.');
+      await CX.post('/auth/password', { current: d.current, password: d.password }); close(); CX.toast('Password changed');
+    });
   });
 
   // tiny hash router: '#/a/b?x=1' -> { parts: ['a','b'], q: URLSearchParams }

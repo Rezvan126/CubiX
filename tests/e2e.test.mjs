@@ -224,6 +224,44 @@ try {
   await olivia.goto(orderUrl.replace(/#.*/, '#/orders/' + orderId)); await olivia.waitForSelector('text=We could not find that order');
   check('direct link to another shop order is refused', true);
 
+  // ---------------------------------------------------------------- invoices
+  const pawId = await team.evaluate(async () => (await (await fetch('/api/team/orders?q=Pawprint', { headers: { 'x-cubix': '1' } })).json()).orders[0].id);
+  await team.goto(BASE + '/team/#/orders?o=' + pawId); await team.waitForSelector('.drawer [data-newinv]');
+  await team.click('.drawer [data-newinv]'); await team.waitForSelector('.modal #invf');
+  check('invoice editor opens prefilled from the order', (await team.inputValue('.modal input[name=bill_name]')) === 'Pawprint Studio');
+  await team.fill('.modal [data-row="0"] [data-k=title]', 'Pet figurine, multicolor ready');
+  await team.fill('.modal [data-row="0"] [data-k=rate]', '95');
+  await team.fill('.modal [data-row="0"] [data-k=bullets]', 'Separate meshes per color\nSolid base within agreed size\nEditable Blender file\nThree revision rounds');
+  await team.click('.modal #addItem'); await team.fill('.modal [data-row="1"] [data-k=title]', 'Rush delivery'); await team.fill('.modal [data-row="1"] [data-k=rate]', '15');
+  check('editor shows the live total', (await team.textContent('.modal #tTot')).includes('110.00'));
+  await shot(team, '16-team-invoice-editor'); await audit(team, 'team invoice editor');
+  await team.click('.modal [data-a=send]'); await team.waitForSelector('.modal h2:text("Invoice ready to share")');
+  const invoiceUrl = (await team.textContent('.modal .copybox span')).trim();
+  check('send gives a shareable invoice link', /\/invoice\/#[a-f0-9]{40}$/.test(invoiceUrl), invoiceUrl);
+  await team.click('.modal [data-c=msg]').catch(() => {});
+  await team.keyboard.press('Escape'); await team.waitForSelector('.drawer [data-inv]');
+  check('order panel lists the invoice', (await team.textContent('.drawer [data-inv]')).includes('110.00'));
+  { const vctx = await browser.newContext({ viewport: { width: 1280, height: 1000 } }); const vp = await vctx.newPage(); watch(vp, 'invoice');
+    await vp.goto(invoiceUrl); await vp.waitForSelector('.sheet');
+    const txt = await vp.textContent('.sheet');
+    check('public invoice shows number, client, lines and total', /CX-\d{4}-001/.test(txt) && txt.includes('Pawprint Studio') && txt.includes('Rush delivery') && txt.includes('110.00') && txt.includes('Thank you.'), txt.slice(0, 200));
+    await vp.screenshot({ path: SHOTS + '17-invoice.png', fullPage: true }); await audit(vp, 'invoice page');
+    const pdf = await vp.pdf({ format: 'A4', printBackground: true, preferCSSPageSize: true });
+    fs.writeFileSync(SHOTS + 'invoice.pdf', pdf);
+    const pages = (pdf.toString('latin1').match(/\/Type\s*\/Page[^s]/g) || []).length;
+    check('invoice prints on exactly one A4 page', pages === 1, pages);
+    const ph = await browser.newPage({ viewport: { width: 390, height: 844 } }); watch(ph, 'invoice-phone');
+    await ph.goto(invoiceUrl); await ph.waitForSelector('.sheet'); await audit(ph, 'phone invoice'); await ph.screenshot({ path: SHOTS + 'p-invoice.png', fullPage: true }); await ph.close();
+    await vctx.close(); }
+  await team.keyboard.press('Escape');
+  await team.goto(BASE + '/team/#/invoices'); await team.waitForSelector('tr[data-i]');
+  check('invoices page lists the sent invoice', (await team.textContent('tr[data-i]')).includes('Sent'));
+  await team.click('tr[data-i]'); await team.waitForSelector('.modal [data-a=paid]'); await team.click('.modal [data-a=paid]');
+  await team.waitForSelector('.modal #pvGo'); await team.selectOption('.modal #pv', 'Payoneer'); await team.click('.modal #pvGo');
+  await team.waitForSelector('tr[data-i] .inv-paid');
+  check('invoice marked paid from the invoices page', true);
+  await shot(team, '18-team-invoices'); await audit(team, 'team invoices');
+
   // ---------------------------------------------------------------- modeler view
   const mctx = await browser.newContext({ viewport: { width: 1440, height: 900 } }); const mod = await mctx.newPage(); watch(mod, 'modeler');
   await mod.goto(modLink); await mod.fill('input[name=password]', 'alipass1234'); await mod.fill('input[name=confirm]', 'alipass1234'); await mod.click('button[type=submit]');

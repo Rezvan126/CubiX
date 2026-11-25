@@ -53,22 +53,25 @@
   }
 
   // ---------------------------------------------------------------- shell
-  const NAV = [['', 'Overview', 'gauge'], ['board', 'Board', 'board'], ['orders', 'Orders', 'list'], ['shops', 'Shops', 'store'], ['team', 'Team', 'users']];
+  const NAV_ALL = [['', 'Overview', 'gauge'], ['board', 'Board', 'board'], ['orders', 'Orders', 'list'], ['shops', 'Shops', 'store'], ['invoices', 'Invoices', 'file', true], ['team', 'Team', 'users']];
+  let NAV = NAV_ALL;
   function renderShell() {
+    NAV = NAV_ALL.filter(n => !n[3] || admin());
     root.innerHTML = `<div class="shell">
       <aside class="side" aria-label="Main">
         ${CX.brand('Team', '#/')}
         <nav class="nav">${NAV.map(([h, l, i]) => `<a href="#/${h}" data-v="${h}">${icon(i)}${l}<span class="count" data-count="${h}" hidden></span></a>`).join('')}</nav>
         <div class="side-cap" id="sideCap"></div>
         <div class="side-user">${avatar(S.me.name)}<div class="who"><b class="ellipsis">${esc(S.me.name)}</b><span class="muted small">${S.me.role === 'admin' ? 'Admin' : 'Modeler'}</span></div>
-          <button class="icon-btn" id="logout" aria-label="Sign out" title="Sign out">${icon('logout')}</button></div>
+          <button class="icon-btn" id="pw" aria-label="Change password" title="Change password">${icon('lock')}</button><button class="icon-btn" id="logout" aria-label="Sign out" title="Sign out">${icon('logout')}</button></div>
       </aside>
-      <div class="mobilebar">${CX.brand('', '#/')}<div class="row">${avatar(S.me.name)}<button class="icon-btn" id="logout2" aria-label="Sign out">${icon('logout')}</button></div></div>
+      <div class="mobilebar">${CX.brand('', '#/')}<div class="row">${avatar(S.me.name)}<button class="icon-btn" id="pw2" aria-label="Change password">${icon('lock')}</button><button class="icon-btn" id="logout2" aria-label="Sign out">${icon('logout')}</button></div></div>
       <main class="main" id="main" tabindex="-1"></main>
       <nav class="tabbar" aria-label="Main">${NAV.map(([h, l, i]) => `<a href="#/${h}" data-v="${h}">${icon(i)}${l}</a>`).join('')}</nav>
     </div>`;
     const out = async () => { try { await post('/auth/logout'); } catch {} S.me = null; renderLogin(); };
     $('#logout').addEventListener('click', out); $('#logout2').addEventListener('click', out);
+    $('#pw').addEventListener('click', CX.changePassword); $('#pw2').addEventListener('click', CX.changePassword);
   }
   function markNav(v) { $$('[data-v]').forEach(a => a.dataset.v === v ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current')); }
   function capClass(r) { return r >= 1 ? 'full' : r >= .75 ? 'mid' : ''; }
@@ -104,6 +107,7 @@
       else if (v === 'orders') await viewOrders(main, r.q);
       else if (v === 'shops') await viewShops(main);
       else if (v === 'team') await viewTeam(main);
+      else if (v === 'invoices' && admin()) await viewInvoices(main, r.q);
       else main.innerHTML = `<div class="empty"><h3>Page not found</h3><a class="btn btn-line" href="#/">Go to overview</a></div>`;
     } catch (e) { if (e.status !== 401) main.innerHTML = `<div class="empty">${icon('alert')}<h3>Could not load this page</h3><p>${esc(e.message)}</p><button class="btn btn-line" onclick="location.reload()">Try again</button></div>`; }
   }
@@ -179,7 +183,7 @@
     s && s.addEventListener('input', () => { clearTimeout(t); t = setTimeout(() => setQ({ q: s.value.trim() }), 350); });
     $$('[data-filter]', main).forEach(el => el.addEventListener('change', () => setQ({ [el.dataset.filter]: el.type === 'checkbox' ? (el.checked ? '1' : '') : el.value })));
   }
-  const thumb = o => o.thumb ? `<img class="thumb" src="${CX.fileUrl(o.thumb, 1)}" alt="" loading="lazy">` : `<span class="thumb ph">${icon('cube')}</span>`;
+  const thumb = o => o.thumb ? `<img class="thumb" src="${CX.thumbUrl(o.thumb)}" alt="" loading="lazy">` : `<span class="thumb ph">${icon('cube')}</span>`;
 
   // ---------------------------------------------------------------- board
   async function viewBoard(main, q) {
@@ -358,7 +362,7 @@
     const mine = o.assignee_id === S.me.id;
     const canAssign = admin() ? S.members.filter(m => m.active) : S.members.filter(m => m.id === S.me.id || m.id === o.assignee_id);
     const groups = { reference: [], preview: [], final: [] }; o.files.forEach(f => groups[f.kind].push(f));
-    const fileTile = f => `<a class="file" href="${CX.fileUrl(f.id)}" title="${esc(f.name)}"><span class="fprev">${CX.isImg(f) ? `<img src="${CX.fileUrl(f.id, 1)}" alt="" loading="lazy">` : esc(CX.ext(f.name))}</span><span class="fname">${esc(f.name)}</span><span class="small muted">${CX.size(f.size)}</span></a>`;
+    const fileTile = f => `<a class="file" href="${CX.fileUrl(f.id)}" title="${esc(f.name)}"><span class="fprev">${CX.isImg(f) ? `<img src="${CX.thumbUrl(f.id)}" alt="" loading="lazy">` : esc(CX.ext(f.name))}</span><span class="fname">${esc(f.name)}</span><span class="small muted">${CX.size(f.size)}</span></a>`;
     const versions = list => { const by = {}; list.forEach(f => (by[f.version] = by[f.version] || []).push(f)); return Object.keys(by).sort((a, b) => b - a).map(v => `<div class="small muted" style="font-weight:600">Version ${v}${+v === Math.max(...Object.keys(by)) ? ' (latest)' : ''}</div><div class="files">${by[v].map(fileTile).join('')}</div>`).join(''); };
     const quick = [];
     if (!o.assignee_id && ['new', 'confirmed', 'modeling', 'revisions'].includes(o.status)) quick.push(`<button class="btn btn-primary btn-sm" data-act="claim">${icon('plus')} Claim this order</button>`);
@@ -388,6 +392,9 @@
         <section class="card"><div class="card-head"><h3>Brief</h3></div>
           <dl class="specs">${[['Product', o.product], ['Size', o.size], ['Printer', o.printer], ['Formats', o.formats], ['Came through', o.channel], ['Ordered', dateTime(o.created_at)], ['Delivered', o.delivered_at ? dateTime(o.delivered_at) : ''], ['Approved', o.approved_at ? dateTime(o.approved_at) : '']].filter(x => x[1]).map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join('')}</dl>
           ${o.notes ? `<div class="notes">${esc(o.notes)}</div>` : ''}</section>
+        ${admin() ? `<section class="card"><div class="card-head"><h3>Invoices</h3><button class="btn btn-line btn-sm" data-newinv>${icon('plus')} Create invoice</button></div>
+          ${o.invoices && o.invoices.length ? `<div class="alist">${o.invoices.map(i => `<button class="aitem" data-inv="${i.id}"><div class="grow"><div class="ttl">${esc(i.number)}</div><div class="sub">${date(i.issued_at)}</div></div><span class="num small" style="font-weight:600">${esc(i.currency)} ${CX.amount(i.total)}</span>${invPill(i.status)}</button>`).join('')}</div>`
+          : `<p class="small muted" style="padding:14px 20px">No invoice yet. ${o.is_free ? 'This is a free model.' : 'Create one from this order in a click.'}</p>`}</section>` : ''}
         <section class="card"><div class="card-head"><h3>Files</h3><span class="small muted">${o.files.length} total</span></div>
           <div class="fgroup"><h4>${icon('file')} From the shop</h4>${groups.reference.length ? `<div class="files">${groups.reference.map(fileTile).join('')}</div>` : '<p class="small muted">No reference files.</p>'}</div>
           <div class="fgroup"><h4>${icon('eye')} Previews</h4>${groups.preview.length ? versions(groups.preview) : '<p class="small muted">No preview sent yet.</p>'}</div>
@@ -397,6 +404,7 @@
           <form class="compose" id="compose"><textarea class="input" name="body" placeholder="Write to ${esc(o.shop_name)} or leave a note for the team" required></textarea>
             <div class="row wrap" style="justify-content:space-between"><label class="check small"><input type="checkbox" name="internal" value="1"> Internal note, the shop will not see it</label><button class="btn btn-dark btn-sm" type="submit">${icon('send')} Send</button></div></form></section>
         <section class="card"><div class="card-head"><h3>History</h3></div><ol class="timeline">${o.events.slice().reverse().map(e => `<li><div><b>${esc(eventText(e))}</b><div class="when">${esc(e.who || 'System')} · ${dateTime(e.created_at)}</div></div></li>`).join('')}</ol></section>
+        ${admin() ? `<p style="text-align:center"><button type="button" class="link small" id="delOrder" style="color:var(--bad)">Delete this order</button></p>` : ''}
       </div>`;
     $('.drawer-body', dr).scrollTop = scroll;
     const th = $('#thread', dr); th.scrollTop = th.scrollHeight;
@@ -418,11 +426,20 @@
       if (a === 'modeling') changed({ status: 'modeling' }, 'Moved to modeling');
       if (a === 'paid') changed({ paid: true }, 'Marked as paid');
     }));
+    const del = $('#delOrder', dr);
+    del && del.addEventListener('click', async () => {
+      if (!(await CX.confirm(`Delete ${o.code}?`, 'The order, its files, messages and history are removed for good. Use this for spam, tests or duplicates.', 'Delete order'))) return;
+      try { await post(`/team/orders/${o.id}/delete`); toast(`${o.code} deleted`); setQ({ o: '' }); refreshOverview(); renderView(false); } catch (e) { fail(e); }
+    });
+    const ni = $('[data-newinv]', dr);
+    ni && ni.addEventListener('click', async () => { CX.busy(ni, true); try { const r = await post('/team/invoices', { order_id: o.id }); invoiceEditor(r.invoice.id, () => renderDrawer(o.id, true)); } catch (e) { fail(e); } finally { CX.busy(ni, false); } });
+    $$('[data-inv]', dr).forEach(b => b.addEventListener('click', () => invoiceEditor(b.dataset.inv, () => renderDrawer(o.id, true))));
     const inp = $('#upInput', dr); let kind = 'preview';
     $$('[data-up]', dr).forEach(b => b.addEventListener('click', () => { kind = b.dataset.up; inp.accept = kind === 'preview' ? 'image/*,.pdf,.mp4,.glb' : ''; inp.click(); }));
     inp.addEventListener('change', async () => {
       if (!inp.files.length) return;
-      const f = new FormData(); f.append('kind', kind); for (const file of inp.files) f.append('files', file);
+      const f = new FormData(); f.append('kind', kind); const picked = [...inp.files]; for (const file of picked) f.append('files', file);
+      await CX.addThumbs(f, picked);
       const prog = $('#upProg', dr); prog.hidden = false; $$('[data-up],[data-act]', dr).forEach(b => b.disabled = true);
       try {
         const r = await CX.upload(`/team/orders/${o.id}/files`, f, p => { prog.firstElementChild.style.width = (p * 100) + '%'; });
@@ -443,6 +460,144 @@
     else if (['preview', 'delivered', 'revision', 'created'].includes(e.type) && e.detail) t += ': ' + e.detail;
     else if (!map[e.type] && e.detail) t = e.detail.replace(/_/g, ' ');
     return t;
+  }
+
+  // ---------------------------------------------------------------- invoices
+  const INV = { draft: 'Draft', sent: 'Sent', paid: 'Paid', void: 'Void' };
+  const invPill = st => `<span class="pill inv-${st}">${INV[st] || st}</span>`;
+  async function viewInvoices(main, q) {
+    const st = q.get('status') || '';
+    const { invoices, sums } = await get('/team/invoices' + (st ? '?status=' + st : ''));
+    main.innerHTML = `<div class="top"><div><h1>Invoices</h1><p class="muted">Bill shops, share a link they can open or save as PDF, and track payment.</p></div>
+        <div class="row wrap"><button class="btn btn-line" id="invSettings">${icon('note')} Invoice details</button><button class="btn btn-primary" id="invNew">${icon('plus')} New invoice</button></div></div>
+      <div class="kpis" style="grid-template-columns:repeat(3,minmax(0,1fr))">
+        <div class="kpi"><span class="k-label">${icon('card')}Outstanding</span><span class="k-val">${money(sums.outstanding) || '$0'}</span><span class="k-sub">${sums.outstanding_n || 0} sent, not paid yet</span></div>
+        <div class="kpi"><span class="k-label">${icon('dollar')}Paid this month</span><span class="k-val">${money(sums.paid_month) || '$0'}</span><span class="k-sub">From paid invoices</span></div>
+        <div class="kpi"><span class="k-label">${icon('file')}Invoices</span><span class="k-val">${invoices.length}</span><span class="k-sub">${st ? INV[st] : 'All statuses'}</span></div></div>
+      <div class="toolbar"><div class="seg" role="group" aria-label="Filter">${[['', 'All'], ['draft', 'Drafts'], ['sent', 'Sent'], ['paid', 'Paid'], ['void', 'Void']].map(([k, l]) => `<button type="button" data-st="${k}" aria-pressed="${st === k}">${l}</button>`).join('')}</div></div>
+      <section class="card">${invoices.length ? `<div class="table-wrap"><table class="t"><thead><tr><th>Invoice</th><th>Billed to</th><th class="hide-sm">Project</th><th>Total</th><th>Status</th><th class="hide-sm">Issued</th></tr></thead><tbody>
+        ${invoices.map(i => `<tr class="click" data-i="${i.id}" tabindex="0"><td style="font-weight:600;color:var(--ink)">${esc(i.number)}</td><td>${esc(i.bill_name)}</td>
+          <td class="hide-sm small muted">${esc(i.project_title || '')}${i.order_code ? ` · ${esc(i.order_code)}` : ''}</td><td class="num">${esc(i.currency)} ${CX.amount(i.total)}</td><td>${invPill(i.status)}</td><td class="small muted hide-sm">${date(i.issued_at)}</td></tr>`).join('')}
+      </tbody></table></div>` : `<div class="empty">${icon('file')}<h3>No invoices ${st ? 'here' : 'yet'}</h3><p>Create one from an order (open the order, then Create invoice) or start a blank one.</p></div>`}</section>`;
+    $$('[data-st]', main).forEach(b => b.addEventListener('click', () => setQ({ status: b.dataset.st })));
+    $$('tr[data-i]', main).forEach(tr => { const open = () => invoiceEditor(tr.dataset.i, () => renderView(false)); tr.addEventListener('click', open); tr.addEventListener('keydown', e => e.key === 'Enter' && open()); });
+    $('#invSettings', main).addEventListener('click', invoiceSettings);
+    $('#invNew', main).addEventListener('click', async () => {
+      const { shops } = await get('/team/shops');
+      if (!shops.length) return toast('Add or invite a shop first.', true);
+      modal(`<h2>New invoice</h2><p class="muted small">Pick the shop to bill. To bill a specific order, open that order and use Create invoice instead.</p>
+        <label class="field"><span>Shop</span><select class="input" id="nsShop">${shops.map(x => `<option value="${x.id}">${esc(x.name)}${x.email ? ` (${esc(x.email)})` : ''}</option>`).join('')}</select></label>
+        <div class="modal-actions"><button class="btn btn-line" data-close>Cancel</button><button class="btn btn-primary" id="nsGo">Create draft</button></div>`, (box, close) => {
+        $('#nsGo', box).addEventListener('click', async e => { CX.busy(e.currentTarget, true); try { const r = await post('/team/invoices', { shop_id: $('#nsShop', box).value }); close(); renderView(false); invoiceEditor(r.invoice.id, () => renderView(false)); } catch (err) { fail(err); CX.busy(e.currentTarget, false); } });
+      });
+    });
+  }
+  async function invoiceSettings() {
+    let st; try { st = (await get('/team/settings')).settings; } catch (e) { return fail(e); }
+    modal(`<h2>Invoice details</h2><p class="muted small">Shown on every invoice. Changes apply to invoices you open or send from now on.</p>
+      <form id="sf" style="display:grid;gap:14px">
+        <div class="grid2"><label class="field"><span>Business name</span><input class="input" name="biz_name" value="${esc(st.biz_name)}" required></label>
+        <label class="field"><span>Tagline</span><input class="input" name="biz_tagline" value="${esc(st.biz_tagline)}"></label></div>
+        <div class="grid2"><label class="field"><span>Email on invoices</span><input class="input" type="email" name="biz_email" value="${esc(st.biz_email)}"></label>
+        <label class="field"><span>Website</span><input class="input" name="biz_website" value="${esc(st.biz_website)}"></label></div>
+        <label class="field"><span>Address or tax details (optional)</span><textarea class="input" name="biz_address" style="min-height:64px">${esc(st.biz_address)}</textarea></label>
+        <div class="grid2"><label class="field"><span>Invoice number prefix</span><input class="input" name="invoice_prefix" value="${esc(st.invoice_prefix)}" maxlength="10"></label>
+        <label class="field"><span>Default terms</span><input class="input" name="terms" value="${esc(st.terms)}"></label></div>
+        <label class="field"><span>Default payment note</span><textarea class="input" name="payment_note">${esc(st.payment_note)}</textarea></label>
+        <label class="field"><span>Default confidentiality note</span><textarea class="input" name="notes">${esc(st.notes)}</textarea></label>
+        <p class="form-msg" role="alert"></p>
+        <div class="modal-actions"><button type="button" class="btn btn-line" data-close>Cancel</button><button class="btn btn-primary" type="submit">Save details</button></div></form>`, (box, close) => {
+      box.classList.add('wide');
+      CX.submit($('#sf', box), async d => { await patch('/team/settings', d); close(); toast('Invoice details saved'); });
+    });
+  }
+  async function invoiceEditor(id, onDone) {
+    let r; try { r = await get('/team/invoices/' + id); } catch (e) { return fail(e); }
+    let inv = r.invoice; const link = r.link, editable = ['draft', 'sent'].includes(inv.status);
+    const dis = editable ? '' : 'disabled';
+    const itemRow = (it, i) => `<div class="inv-item" data-row="${i}">
+      <div class="inv-item-top"><input class="input input-sm" data-k="title" value="${esc(it.title)}" placeholder="Line title, for example Architectural modeling, multicolor ready" ${dis}>
+        <input class="input input-sm num" data-k="qty" type="number" min="0" step="1" value="${esc(it.qty)}" aria-label="Quantity" ${dis}>
+        <input class="input input-sm num" data-k="rate" type="number" min="0" step="0.01" value="${esc(it.rate)}" aria-label="Rate" ${dis}>
+        <span class="num inv-amt" data-amt>${CX.amount((Number(it.qty) || 0) * (Number(it.rate) || 0))}</span>
+        ${editable ? `<button type="button" class="icon-btn" data-rm aria-label="Remove line">${icon('x')}</button>` : ''}</div>
+      <textarea class="input input-sm" data-k="description" placeholder="Short description" ${dis}>${esc(it.description || '')}</textarea>
+      <textarea class="input input-sm" data-k="bullets" placeholder="What is included, one point per line" ${dis}>${esc((it.bullets || []).join('\n'))}</textarea></div>`;
+    modal(`<div class="row" style="justify-content:space-between;align-items:flex-start"><div><h2>${esc(inv.number)}</h2><p class="small muted" style="margin-top:4px">${esc(inv.shop_name)}${inv.order_code ? ` · Order ${esc(inv.order_code)}` : ''}</p></div><div class="row">${invPill(inv.status)}<button class="icon-btn" data-close aria-label="Close">${icon('x')}</button></div></div>
+      <form id="invf" style="display:grid;gap:14px" novalidate>
+        <div class="grid2"><label class="field"><span>Billed to</span><input class="input" name="bill_name" value="${esc(inv.bill_name)}" ${dis}></label>
+          <label class="field"><span>Billing email</span><input class="input" type="email" name="bill_email" value="${esc(inv.bill_email || '')}" ${dis}></label></div>
+        <div class="grid2"><label class="field"><span>Project</span><input class="input" name="project_title" value="${esc(inv.project_title || '')}" ${dis}></label>
+          <label class="field"><span>Reference</span><input class="input" name="project_ref" value="${esc(inv.project_ref || '')}" ${dis}></label></div>
+        <div class="inv-grid4"><label class="field"><span>Issued</span><input class="input" type="date" name="issued_at" value="${esc(inv.issued_at.slice(0, 10))}" ${dis}></label>
+          <label class="field"><span>Terms</span><input class="input" name="terms" value="${esc(inv.terms || '')}" ${dis}></label>
+          <label class="field"><span>Currency</span><input class="input" name="currency" value="${esc(inv.currency)}" maxlength="3" ${dis}></label>
+          <label class="field"><span>Tax %</span><input class="input num" type="number" min="0" max="100" step="0.01" name="tax_rate" value="${esc(inv.tax_rate)}" ${dis}></label></div>
+        <div class="field"><span>Line items</span><div class="inv-items" id="items">${inv.items.map(itemRow).join('')}</div>
+          ${editable ? `<button type="button" class="btn btn-line btn-sm" id="addItem" style="justify-self:start">${icon('plus')} Add line</button>` : ''}</div>
+        <div class="inv-total"><span class="muted small">Subtotal <b class="num" id="tSub"></b> · Tax <b class="num" id="tTax"></b></span><span>Total <b class="num" id="tTot"></b></span></div>
+        <label class="field"><span>Payment note</span><textarea class="input" name="payment_note" ${dis}>${esc(inv.payment_note || '')}</textarea></label>
+        <label class="field"><span>Confidentiality note</span><textarea class="input" name="notes" style="min-height:64px" ${dis}>${esc(inv.notes || '')}</textarea></label>
+        <p class="form-msg" role="alert"></p>
+        <div class="modal-actions" style="justify-content:space-between">
+          <div class="row wrap">${inv.status === 'draft' ? '<button type="button" class="btn btn-ghost" data-a="void">Delete draft</button>' : inv.status === 'sent' ? '<button type="button" class="btn btn-ghost" data-a="void">Void</button>' : ''}</div>
+          <div class="row wrap"><button type="button" class="btn btn-line" data-a="preview">${icon('eye')} ${editable ? 'Preview' : 'Open'}</button>
+            ${editable ? `<button type="button" class="btn btn-line" data-a="save">Save</button>` : ''}
+            ${inv.status === 'sent' ? `<button type="button" class="btn btn-ok" data-a="paid">${icon('check')} Mark paid</button>` : ''}
+            ${editable ? `<button type="button" class="btn btn-primary" data-a="send">${icon('send')} ${inv.status === 'sent' ? 'Save and get link' : 'Send'}</button>` : ''}</div></div>
+      </form>`, (box, close) => {
+      box.classList.add('wide');
+      const form = $('#invf', box), items = $('#items', box), msg = $('.form-msg', box);
+      const read = () => $$('[data-row]', items).map(row => { const g = k => $(`[data-k="${k}"]`, row).value; return { title: g('title'), qty: Number(g('qty')) || 0, rate: Number(g('rate')) || 0, description: g('description'), bullets: g('bullets').split('\n').map(x => x.trim()).filter(Boolean) }; });
+      const recalc = () => {
+        let sub = 0; $$('[data-row]', items).forEach(row => { const a = (Number($('[data-k=qty]', row).value) || 0) * (Number($('[data-k=rate]', row).value) || 0); sub += a; $('[data-amt]', row).textContent = CX.amount(a); });
+        const tax = sub * (Number(form.tax_rate.value) || 0) / 100, cur = form.currency.value.toUpperCase() || 'USD';
+        $('#tSub', box).textContent = CX.amount(sub); $('#tTax', box).textContent = CX.amount(tax); $('#tTot', box).textContent = `${cur} ${CX.amount(sub + tax)}`;
+      };
+      const reindex = () => $$('[data-row]', items).forEach((row, i) => { row.dataset.row = i; });
+      items.addEventListener('input', recalc); form.tax_rate.addEventListener('input', recalc); form.currency.addEventListener('input', recalc);
+      items.addEventListener('click', e => { const b = e.target.closest('[data-rm]'); if (b) { if ($$('[data-row]', items).length < 2) return toast('An invoice needs at least one line.', true); b.closest('[data-row]').remove(); reindex(); recalc(); } });
+      const add = $('#addItem', box); add && add.addEventListener('click', () => { items.insertAdjacentHTML('beforeend', itemRow({ title: '', qty: 1, rate: 0, bullets: [] }, $$('[data-row]', items).length)); recalc(); $('[data-row]:last-child [data-k=title]', items).focus(); });
+      recalc();
+      const save = async () => {
+        if (!editable) return inv;
+        const d = CX.formData(form);
+        const r2 = await patch('/team/invoices/' + inv.id, { ...d, issued_at: d.issued_at ? d.issued_at + 'T12:00:00.000Z' : undefined, tax_rate: Number(d.tax_rate) || 0, items: read() });
+        inv = r2.invoice; return inv;
+      };
+      $$('[data-a]', box).forEach(b => b.addEventListener('click', async () => {
+        const a = b.dataset.a; msg.textContent = ''; msg.className = 'form-msg';
+        try {
+          if (a === 'preview') { const w = window.open('', '_blank'); await save(); if (w) w.location = link; else location.href = link; return; }
+          if (a === 'save') { CX.busy(b, true); await save(); CX.busy(b, false); toast('Invoice saved'); onDone && onDone(); return; }
+          if (a === 'send') {
+            CX.busy(b, true); await save(); const r3 = await post(`/team/invoices/${inv.id}/send`); close(); onDone && onDone();
+            const name = (inv.bill_name || '').split(' ')[0] || 'there';
+            const text = `Hi ${name},\n\nHere is invoice ${inv.number} for ${inv.currency} ${CX.amount(inv.total)}:\n${r3.link}\n\nYou can open it in any browser and save it as a PDF. Payment details are on the invoice.\n\nThank you.`;
+            modal(`<h2>Invoice ready to share</h2><p class="muted small">${r3.emailed ? 'We emailed it to ' + esc(inv.bill_email) + '. You can also send it yourself.' : 'Send this link by email, Upwork, Fiverr or WhatsApp. It opens without a login.'}</p>
+              <div class="copybox"><span class="grow">${esc(r3.link)}</span><button class="btn btn-dark btn-sm" data-c="link">${icon('copy')} Copy link</button></div>
+              <label class="field"><span>Ready to send message</span><textarea class="input" readonly style="min-height:150px">${esc(text)}</textarea></label>
+              <div class="modal-actions"><a class="btn btn-line" href="${esc(r3.link)}" target="_blank" rel="noopener">${icon('eye')} Open invoice</a><button class="btn btn-primary" data-c="msg">${icon('copy')} Copy message</button></div>`, bx => {
+              $$('[data-c]', bx).forEach(c => c.addEventListener('click', async () => { try { await navigator.clipboard.writeText(c.dataset.c === 'msg' ? text : r3.link); c.innerHTML = icon('check') + ' Copied'; } catch { toast('Select the text and copy it manually.', true); } }));
+            });
+            return;
+          }
+          if (a === 'paid') {
+            close();
+            modal(`<h2>Mark ${esc(inv.number)} as paid</h2><p class="muted small">${inv.order_id ? 'The linked order is marked paid too, once the client has approved it.' : ''}</p>
+              <label class="field"><span>Paid via</span><select class="input" id="pv">${['Direct', 'Payoneer', 'Upwork', 'Fiverr', 'Bank transfer', 'Other'].map(x => `<option>${x}</option>`).join('')}</select></label>
+              <div class="modal-actions"><button class="btn btn-line" data-close>Cancel</button><button class="btn btn-ok" id="pvGo">${icon('check')} Mark paid</button></div>`, (bx, c2) => {
+              $('#pvGo', bx).addEventListener('click', async e => { CX.busy(e.currentTarget, true); try { await post(`/team/invoices/${inv.id}/paid`, { paid_via: $('#pv', bx).value }); c2(); toast('Invoice marked paid'); refreshOverview(); onDone && onDone(); } catch (err) { fail(err); CX.busy(e.currentTarget, false); } });
+            });
+            return;
+          }
+          if (a === 'void') {
+            if (!(await CX.confirm(inv.status === 'draft' ? 'Delete this draft?' : 'Void this invoice?', inv.status === 'draft' ? 'The draft is removed. Nothing was sent to the client.' : 'The link stays readable but shows the invoice as void. This cannot be undone.', inv.status === 'draft' ? 'Delete' : 'Void'))) return;
+            await post(`/team/invoices/${inv.id}/void`); toast(inv.status === 'draft' ? 'Draft deleted' : 'Invoice voided'); onDone && onDone(); return;
+          }
+        } catch (e) { CX.busy(b, false); msg.textContent = e.message; msg.className = 'form-msg err'; }
+      }));
+    });
   }
 
   // ---------------------------------------------------------------- boot
