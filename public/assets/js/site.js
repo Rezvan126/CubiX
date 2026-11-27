@@ -93,6 +93,11 @@
   /* ---------- portfolio data ---------- */
   // [id, has customer photo, title, detail, categories]
   const WORK = [
+    [25, 1, 'Brick ranch with porch and garage', 'Christmas village lantern at 229 mm', 'lantern home'],
+    [26, 1, 'Tudor revival keepsake', 'Half timbered gables at 178 mm', 'lantern home'],
+    [27, 1, 'Bungalow with lattice porch', 'Porch rails and lattice skirt, fence as a separate part', 'home'],
+    [28, 1, 'Brick colonial with three car garage', 'Hollow lantern at 229 mm', 'lantern home'],
+    [29, 1, 'Long ranch with stone accents', 'Single storey with attached garage', 'home'],
     [1, 1, 'Brick Georgian colonial', 'Dormers, quoins and a curved stone entry', 'home'],
     [2, 1, 'Colonial keepsake', 'Deck, ramp and porch at 127 mm', 'lantern home'],
     [3, 1, 'Stone French country lantern', 'LED lantern at 229 mm, cut through windows', 'lantern home'],
@@ -110,6 +115,7 @@
     [15, 1, 'Three storey shingle home', 'Balconies and columned porch', 'home'],
     [16, 1, 'Coastal modern villa', 'Round window and pool terrace', 'home'],
     [17, 1, 'Shingle style estate', 'From architect drawings, 178 mm lantern', 'drawing lantern'],
+    [30, 0, 'Modern three storey', 'Flat roof block with new window layout', 'home'],
     [18, 0, 'Montauk contemporary', 'From architect elevations', 'drawing home'],
     [19, 0, 'Large brick estate', 'LED lantern', 'lantern landmark'],
     [20, 0, 'Village house', 'LED lantern', 'lantern home'],
@@ -136,7 +142,7 @@
   let current = [];
   $$('[data-portfolio]').forEach(grid => {
     const ids = grid.dataset.ids ? grid.dataset.ids.split(',').map(Number) : null;
-    const list = ids ? ids.map(i => WORK[i - 1]) : WORK;
+    const list = ids ? ids.map(i => WORK.find(w => w[0] === i)) : WORK;
     grid.innerHTML = list.map(card).join('');
     grid.addEventListener('click', e => {
       const b = e.target.closest('.pcard'); if (!b) return;
@@ -163,7 +169,7 @@
     if (!lb) return;
     lbCtl = lbCtl || bindCompare($('#lbCmp'));
     lbId = id;
-    const [n, ph, t, d, c] = WORK[id - 1];
+    const [n, ph, t, d, c] = WORK.find(w => w[0] === id);
     const views = ['a', 'b', 'c', 'd'].map(s => A(`${IMG}${pad(n)}-${s}.webp`));
     const photo = ph ? A(`${IMG}${pad(n)}-photo.webp`) : null;
     const items = (ph ? [{ cmp: true }] : []).concat(views.map(src => ({ src })));

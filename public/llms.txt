@@ -21,7 +21,7 @@ CubiX works as a white label modeling team: shops sell custom prints under their
 
 ## Pages
 - [Home](https://cubix.axys3d.com/): overview, how an order works, what we model
-- [Portfolio](https://cubix.axys3d.com/work): 24 real customer orders shown next to the photos they were built from
+- [Portfolio](https://cubix.axys3d.com/work): 30 real customer orders shown next to the photos they were built from
 - [How it works](https://cubix.axys3d.com/how-it-works): the order process from upload to print ready files
 - [Pricing](https://cubix.axys3d.com/pricing): price ranges, estimator, payment options and monthly packages
 - [Technical specs](https://cubix.axys3d.com/specs): file formats, print preparation and a 3D viewer
